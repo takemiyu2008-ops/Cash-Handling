@@ -36,13 +36,8 @@ nav.tabs button.active{color:var(--accent); border-bottom-color:var(--accent); f
 main{max-width:640px; margin:0 auto; padding:16px 12px;}
 section.tab{display:none;}
 section.tab.active{display:block;}
-@keyframes tab-in-left{from{transform:translateX(24px);opacity:.3;}to{transform:none;opacity:1;}}
-@keyframes tab-in-right{from{transform:translateX(-24px);opacity:.3;}to{transform:none;opacity:1;}}
-section.tab.slide-left{animation:tab-in-left .18s ease-out;}
-section.tab.slide-right{animation:tab-in-right .18s ease-out;}
-@media (prefers-reduced-motion: reduce){
-  section.tab.slide-left,section.tab.slide-right{animation:none;}
-}
+html,body{overflow-x:hidden;}
+section.tab.dragging{will-change:transform;}
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px;}
 .card h2{font-size:14px; color:var(--sub); font-weight:600; margin-bottom:12px;}
 table{width:100%; border-collapse:collapse; font-size:14px;}
@@ -745,14 +740,11 @@ function renderAll() {
 
 const TAB_ORDER = Array.from(document.querySelectorAll('nav.tabs button')).map(b => b.dataset.tab);
 
-function activateTab(name, slideDir) {   // slideDir: 'left' | 'right' | undefined
+function activateTab(name) {
   document.querySelectorAll('nav.tabs button')
     .forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('section.tab')
-    .forEach(s => s.classList.remove('active', 'slide-left', 'slide-right'));
-  const panel = document.getElementById('tab-' + name);
-  panel.classList.add('active');
-  if (slideDir) panel.classList.add('slide-' + slideDir);
+    .forEach(s => s.classList.toggle('active', s.id === 'tab-' + name));
   if (name === 'audit') updateAuditView();
 }
 
@@ -760,16 +752,83 @@ document.querySelectorAll('nav.tabs button').forEach(btn => {
   btn.addEventListener('click', () => activateTab(btn.dataset.tab));
 });
 
-// ===== スワイプでタブ切替 =====
+// ===== スワイプでタブ切替（指に追従するドラッグ式） =====
 (function initSwipe() {
-  const EDGE = 24;        // iOS Safariの戻る/進むエッジジェスチャ回避帯(px)
-  const MIN_DX = 60;      // 横移動しきい値(px)
-  const MAX_RATIO = 0.6;  // abs(dy) > abs(dx)*0.6 なら縦スクロールとみなし無視
-  const MAX_MS = 600;     // これより遅いドラッグは無視
-  let sx = 0, sy = 0, st = 0, tracking = false;
+  const EDGE = 24;       // iOS Safariの戻る/進むエッジジェスチャ回避帯(px)
+  const LOCK_DX = 10;    // これ以上横に動いたらドラッグ開始（方向ロック）
+  const FLICK_MS = 250;  // この時間内に離せばフリック扱い
+  const FLICK_DX = 50;   // フリック成立の最低移動量(px)
+  const mainEl = document.querySelector('main');
+  const topbar = document.querySelector('.topbar');
+
+  let sx = 0, sy = 0, st = 0;
+  let tracking = false;   // タッチ追跡中（ドラッグ判定前）
+  let dragging = false;   // ドラッグ中（画面が指に追従している）
+  let animating = false;  // 離した後のスナップアニメーション中
+  let curPanel = null, nextPanel = null, targetTab = null;
+  let dir = 0, width = 0;
+
+  function beginDrag(dx) {
+    const cur = document.querySelector('nav.tabs button.active').dataset.tab;
+    const idx = TAB_ORDER.indexOf(cur);
+    dir = dx < 0 ? 1 : -1;              // 1=左スワイプ（次のタブ）
+    const nIdx = idx + dir;
+    if (nIdx < 0 || nIdx >= TAB_ORDER.length) return false;  // 端のタブ
+    targetTab = TAB_ORDER[nIdx];
+    curPanel = document.getElementById('tab-' + cur);
+    nextPanel = document.getElementById('tab-' + targetTab);
+    if (targetTab === 'audit') updateAuditView();  // プレビューを最新化
+    const rect = mainEl.getBoundingClientRect();
+    width = rect.width;
+    // 隣のパネルをビューポート固定で横に待機させる
+    const top = topbar.getBoundingClientRect().bottom;
+    nextPanel.style.cssText =
+      `display:block; position:fixed; top:${top}px; left:${rect.left}px; ` +
+      `width:${width}px; height:calc(100vh - ${top}px); overflow:hidden; ` +
+      `padding:16px 12px; transform:translateX(${dir * width}px);`;
+    curPanel.classList.add('dragging');
+    nextPanel.classList.add('dragging');
+    return true;
+  }
+
+  function moveDrag(dx) {
+    // 進行方向のみ・1画面分まででクランプ
+    dx = dir === 1 ? Math.max(-width, Math.min(0, dx)) : Math.min(width, Math.max(0, dx));
+    curPanel.style.transform = `translateX(${dx}px)`;
+    nextPanel.style.transform = `translateX(${dx + dir * width}px)`;
+  }
+
+  function finishDrag(commit) {
+    dragging = false;
+    animating = true;
+    const ease = 'transform .22s ease-out';
+    curPanel.style.transition = ease;
+    nextPanel.style.transition = ease;
+    requestAnimationFrame(() => {
+      curPanel.style.transform = `translateX(${commit ? -dir * width : 0}px)`;
+      nextPanel.style.transform = `translateX(${commit ? 0 : dir * width}px)`;
+    });
+    const done = () => {
+      if (!animating) return;
+      animating = false;
+      nextPanel.removeEventListener('transitionend', done);
+      curPanel.classList.remove('dragging');
+      nextPanel.classList.remove('dragging');
+      curPanel.style.cssText = '';
+      nextPanel.style.cssText = '';
+      if (commit) {
+        activateTab(targetTab);
+        scrollTo(0, 0);
+      }
+      curPanel = nextPanel = targetTab = null;
+    };
+    nextPanel.addEventListener('transitionend', done);
+    setTimeout(done, 350);  // transitionendが来ない場合の保険
+  }
 
   document.addEventListener('touchstart', e => {
     tracking = false;
+    if (dragging || animating) return;
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX < EDGE || t.clientX > innerWidth - EDGE) return;
@@ -777,20 +836,40 @@ document.querySelectorAll('nav.tabs button').forEach(btn => {
     sx = t.clientX; sy = t.clientY; st = Date.now(); tracking = true;
   }, {passive: true});
 
-  document.addEventListener('touchcancel', () => { tracking = false; }, {passive: true});
+  document.addEventListener('touchmove', e => {
+    if (dragging) {
+      if (e.touches.length !== 1) { finishDrag(false); return; }
+      e.preventDefault();  // ドラッグ中は縦スクロールさせない
+      moveDrag(e.touches[0].clientX - sx);
+      return;
+    }
+    if (!tracking) return;
+    const t = e.touches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dy) > Math.abs(dx)) { tracking = false; return; }  // 縦スクロール優先
+    if (Math.abs(dx) < LOCK_DX) return;
+    tracking = false;
+    if (beginDrag(dx)) {
+      dragging = true;
+      e.preventDefault();
+      moveDrag(dx);
+    }
+  }, {passive: false});
 
   document.addEventListener('touchend', e => {
-    if (!tracking) return;
+    if (!dragging) { tracking = false; return; }
+    const dx = e.changedTouches[0].clientX - sx;
+    const elapsed = Date.now() - st;
+    const rightDir = dir === 1 ? dx < 0 : dx > 0;
+    const commit = rightDir &&
+      (Math.abs(dx) > width / 2 ||
+       (elapsed < FLICK_MS && Math.abs(dx) > FLICK_DX));  // 半分超え or 素早いフリック
+    finishDrag(commit);
+  }, {passive: true});
+
+  document.addEventListener('touchcancel', () => {
     tracking = false;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - sx, dy = t.clientY - sy;
-    if (Date.now() - st > MAX_MS) return;
-    if (Math.abs(dx) < MIN_DX) return;
-    if (Math.abs(dy) > Math.abs(dx) * MAX_RATIO) return;
-    const cur = TAB_ORDER.indexOf(document.querySelector('nav.tabs button.active').dataset.tab);
-    const next = dx < 0 ? cur + 1 : cur - 1;   // 左スワイプ=次のタブ、右スワイプ=前のタブ
-    if (next < 0 || next >= TAB_ORDER.length) return;  // 端のタブでは何もしない
-    activateTab(TAB_ORDER[next], dx < 0 ? 'left' : 'right');
+    if (dragging) finishDrag(false);
   }, {passive: true});
 })();
 
