@@ -15,15 +15,17 @@ body{
   background:var(--bg); color:var(--ink); padding-bottom:56px;
   font-feature-settings:"tnum";
 }
+.topbar{position:sticky; top:0; z-index:20;}
 header{
-  position:sticky; top:0; z-index:20; background:var(--ink); color:#fff;
-  padding:10px 16px; display:flex; justify-content:space-between; align-items:baseline; gap:8px;
+  background:var(--ink); color:#fff;
+  padding:8px 16px; display:flex; justify-content:space-between; align-items:center; gap:8px;
 }
 header h1{font-size:16px; font-weight:600;}
-header .total{font-size:18px; font-weight:700;}
+header .clock{font-size:11px; opacity:.85; margin-top:2px; font-variant-numeric:tabular-nums;}
+header .total{font-size:18px; font-weight:700; white-space:nowrap;}
 header .total small{font-size:11px; font-weight:400; opacity:.75; margin-right:6px;}
 nav.tabs{
-  position:sticky; top:42px; z-index:19; display:flex; background:var(--card);
+  display:flex; background:var(--card);
   border-bottom:1px solid var(--line);
 }
 nav.tabs button{
@@ -110,22 +112,27 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
 </head>
 <body>
 
+<div class="topbar">
 <header>
-  <h1>金庫現金管理</h1>
+  <div>
+    <h1>金庫現金管理</h1>
+    <div class="clock" id="clock"></div>
+  </div>
   <div class="total"><small>帳簿残高</small><span id="headerTotal">0</span>円</div>
 </header>
 
 <nav class="tabs">
-  <button data-tab="balance" class="active">残高</button>
+  <button data-tab="audit" class="active">実査</button>
+  <button data-tab="balance">残高</button>
   <button data-tab="entry">入出金</button>
-  <button data-tab="audit">実査</button>
   <button data-tab="history">履歴</button>
 </nav>
+</div>
 
 <main>
 
 <!-- ========== 残高 ========== -->
-<section class="tab active" id="tab-balance">
+<section class="tab" id="tab-balance">
   <div class="notice" id="firstUseNotice" hidden>
     はじめにお使いの場合は、「実査」タブで金庫内の現金を金種ごとに数えて登録してください。
     その結果が帳簿残高のスタート地点になります。
@@ -180,7 +187,7 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
 </section>
 
 <!-- ========== 実査 ========== -->
-<section class="tab" id="tab-audit">
+<section class="tab active" id="tab-audit">
   <div class="card">
     <h2>実査（金庫内の現金を数えて照合）</h2>
     <p style="font-size:13px; color:var(--sub); line-height:1.6; margin-bottom:12px;">
@@ -305,10 +312,25 @@ function toast(msg) {
   toast._t = setTimeout(() => el.classList.remove('show'), 2200);
 }
 
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+const pad2 = n => String(n).padStart(2, '0');
+
+// 例: 2026/07/16（木）
+function fmtDay(iso) {
+  const dt = new Date(iso);
+  return `${dt.getFullYear()}/${pad2(dt.getMonth() + 1)}/${pad2(dt.getDate())}（${WEEKDAYS[dt.getDay()]}）`;
+}
+
+// 例: 2026/07/16（木） 21:35
 function fmtDate(iso) {
   const dt = new Date(iso);
-  const p = n => String(n).padStart(2, '0');
-  return `${dt.getFullYear()}/${p(dt.getMonth() + 1)}/${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}`;
+  return `${fmtDay(iso)} ${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
+}
+
+function updateClock() {
+  const dt = new Date();
+  document.getElementById('clock').textContent =
+    `${fmtDay(dt.toISOString())} ${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
 }
 
 // ===== 金種入力欄の生成 =====
@@ -590,7 +612,7 @@ function renderHistory() {
   box.innerHTML = '';
   let lastDate = '';
   [...state.transactions].reverse().forEach(tx => {
-    const dateStr = fmtDate(tx.at).slice(0, 10);
+    const dateStr = fmtDay(tx.at);
     if (dateStr !== lastDate) {
       lastDate = dateStr;
       const div = document.createElement('div');
@@ -746,6 +768,8 @@ document.getElementById('resetAll').addEventListener('click', resetAll);
 renderAll();
 updateEntryTotal();
 updateAuditView();
+updateClock();
+setInterval(updateClock, 1000);
 </script>
 </body>
 </html>
