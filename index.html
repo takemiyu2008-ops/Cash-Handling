@@ -73,6 +73,10 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
 .amount-in{color:var(--in);}
 .amount-out{color:var(--out);}
 .diff-zero{color:var(--sub);}
+.hist-date{
+  font-size:12px; font-weight:600; color:var(--sub); background:#eef1f5;
+  padding:4px 10px; border-radius:999px; display:inline-block; margin:12px 0 4px;
+}
 .hist-item{border-bottom:1px solid var(--line); padding:10px 2px;}
 .hist-item:last-child{border-bottom:none;}
 .hist-head{display:flex; justify-content:space-between; align-items:baseline; gap:8px;}
@@ -122,6 +126,15 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
   <div class="notice" id="firstUseNotice" hidden>
     はじめにお使いの場合は、「実査」タブで金庫内の現金を金種ごとに数えて登録してください。
     その結果が帳簿残高のスタート地点になります。
+  </div>
+  <div class="card">
+    <h2>基準額との比較</h2>
+    <table>
+      <tr><td>基準額</td><td id="baseAmountCell"></td></tr>
+      <tr><td>帳簿残高</td><td id="baseBookCell"></td></tr>
+      <tr class="total"><td>差額</td><td id="baseDiffCell"></td></tr>
+    </table>
+    <button class="btn secondary" id="baseEdit">基準額を変更</button>
   </div>
   <div class="card">
     <h2>金種別 帳簿残高</h2>
@@ -177,6 +190,7 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
         <tr><td>実査合計</td><td id="auditActualTotal">0円</td></tr>
         <tr><td>帳簿残高</td><td id="auditBookTotal">0円</td></tr>
         <tr class="total"><td>過不足</td><td id="auditDiffTotal">±0円</td></tr>
+        <tr><td>基準額との差</td><td id="auditBaseDiff">±0円</td></tr>
       </table>
     </div>
 
@@ -221,6 +235,7 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
 const DENOMS = [10000, 5000, 1000, 500, 100, 50, 10, 5, 1];
 const BILLS = new Set([10000, 5000, 1000]);
 const STORAGE_KEY = 'kinko-cash-v1';
+const DEFAULT_BASE_AMOUNT = 500000; // 金庫の基準額（円）
 
 const TYPE_LABELS = {
   sales_in:      '売上金入金',
@@ -242,7 +257,7 @@ let state = load();
 function emptyState() {
   const counts = {};
   DENOMS.forEach(d => counts[d] = 0);
-  return { version: 1, nextId: 1, counts, transactions: [] };
+  return { version: 1, nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, counts, transactions: [] };
 }
 
 function load() {
@@ -253,6 +268,7 @@ function load() {
     if (!s || typeof s !== 'object' || !s.counts || !Array.isArray(s.transactions)) return emptyState();
     DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
     if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
+    if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
     return s;
   } catch (e) {
     return emptyState();
@@ -340,6 +356,26 @@ function renderBalance() {
   document.getElementById('headerTotal').textContent = fmt(bookTotal());
   document.getElementById('firstUseNotice').hidden =
     !(state.transactions.length === 0 && bookTotal() === 0);
+
+  const book = bookTotal();
+  const diff = book - state.baseAmount;
+  document.getElementById('baseAmountCell').textContent = fmt(state.baseAmount) + '円';
+  document.getElementById('baseBookCell').textContent = fmt(book) + '円';
+  const diffCell = document.getElementById('baseDiffCell');
+  diffCell.textContent = fmtSigned(diff) + '円';
+  diffCell.className = diff > 0 ? 'amount-in' : diff < 0 ? 'amount-out' : 'diff-zero';
+}
+
+function editBaseAmount() {
+  const input = prompt('金庫の基準額（円）を入力してください', state.baseAmount);
+  if (input === null) return;
+  const v = parseInt(String(input).replace(/[,，\s]/g, ''), 10);
+  if (!Number.isInteger(v) || v < 0) { toast('金額は0以上の整数で入力してください'); return; }
+  state.baseAmount = v;
+  save();
+  renderAll();
+  updateAuditView();
+  toast(`基準額を ${fmt(v)}円 に設定しました`);
 }
 
 // ===== 入出金タブ =====
@@ -411,6 +447,10 @@ function updateAuditView() {
   const diffEl = document.getElementById('auditDiffTotal');
   diffEl.textContent = fmtSigned(diffTotal) + '円';
   diffEl.className = diffTotal > 0 ? 'amount-in' : diffTotal < 0 ? 'amount-out' : 'diff-zero';
+  const baseDiff = actualTotal - state.baseAmount;
+  const baseEl = document.getElementById('auditBaseDiff');
+  baseEl.textContent = fmtSigned(baseDiff) + '円';
+  baseEl.className = baseDiff > 0 ? 'amount-in' : baseDiff < 0 ? 'amount-out' : 'diff-zero';
 }
 
 function prefillAudit() {
@@ -493,7 +533,16 @@ function renderHistory() {
     return;
   }
   box.innerHTML = '';
+  let lastDate = '';
   [...state.transactions].reverse().forEach(tx => {
+    const dateStr = fmtDate(tx.at).slice(0, 10);
+    if (dateStr !== lastDate) {
+      lastDate = dateStr;
+      const div = document.createElement('div');
+      div.className = 'hist-date';
+      div.textContent = dateStr;
+      box.appendChild(div);
+    }
     const item = document.createElement('div');
     item.className = 'hist-item';
     const isAudit = tx.type === 'audit';
@@ -577,6 +626,7 @@ function importJson(file) {
       if (!confirm('現在のデータをバックアップの内容で置き換えます。よろしいですか？')) return;
       DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
       if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
+      if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
       state = s;
       save();
       renderAll();
@@ -623,6 +673,7 @@ document.getElementById('entryDenoms').addEventListener('input', updateEntryTota
 document.getElementById('auditDenoms').addEventListener('input', updateAuditView);
 document.getElementById('entryType').addEventListener('change', updateEntryTotal);
 document.getElementById('entrySubmit').addEventListener('click', submitEntry);
+document.getElementById('baseEdit').addEventListener('click', editBaseAmount);
 document.getElementById('auditPrefill').addEventListener('click', prefillAudit);
 document.getElementById('auditSubmit').addEventListener('click', submitAudit);
 document.getElementById('csvExport').addEventListener('click', exportCsv);

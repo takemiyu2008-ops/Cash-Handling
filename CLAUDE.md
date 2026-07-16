@@ -16,7 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## アーキテクチャ
 
-- 状態は `state = { version, nextId, counts, transactions }` の1オブジェクト。localStorage キーは `kinko-cash-v1`
+- 状態は `state = { version, nextId, baseAmount, counts, transactions }` の1オブジェクト。localStorage キーは `kinko-cash-v1`
+- `baseAmount` は金庫の基準額（デフォルト500,000円、残高タブから変更可）。残高・実査の両タブで基準額との差額を表示する
 - `counts` は金種→帳簿上の枚数。`transactions[].delta` は金種→**符号付き枚数**（＋が金庫に入る方向）で、残高は取引の適用結果として更新される
 - 取引種別は `TYPE_LABELS` に定義（売上金入金・釣銭調達・釣銭払い出し・銀行預け入れ・その他入出金・実査調整・取消）
 - 取引の削除はしない方針。誤記録は「取消」＝逆方向の取引（`reversal`）を追加して打ち消す（監査証跡を残すため）
