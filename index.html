@@ -36,6 +36,13 @@ nav.tabs button.active{color:var(--accent); border-bottom-color:var(--accent); f
 main{max-width:640px; margin:0 auto; padding:16px 12px;}
 section.tab{display:none;}
 section.tab.active{display:block;}
+@keyframes tab-in-left{from{transform:translateX(24px);opacity:.3;}to{transform:none;opacity:1;}}
+@keyframes tab-in-right{from{transform:translateX(-24px);opacity:.3;}to{transform:none;opacity:1;}}
+section.tab.slide-left{animation:tab-in-left .18s ease-out;}
+section.tab.slide-right{animation:tab-in-right .18s ease-out;}
+@media (prefers-reduced-motion: reduce){
+  section.tab.slide-left,section.tab.slide-right{animation:none;}
+}
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px;}
 .card h2{font-size:14px; color:var(--sub); font-weight:600; margin-bottom:12px;}
 table{width:100%; border-collapse:collapse; font-size:14px;}
@@ -736,15 +743,56 @@ function renderAll() {
   renderHistory();
 }
 
+const TAB_ORDER = Array.from(document.querySelectorAll('nav.tabs button')).map(b => b.dataset.tab);
+
+function activateTab(name, slideDir) {   // slideDir: 'left' | 'right' | undefined
+  document.querySelectorAll('nav.tabs button')
+    .forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('section.tab')
+    .forEach(s => s.classList.remove('active', 'slide-left', 'slide-right'));
+  const panel = document.getElementById('tab-' + name);
+  panel.classList.add('active');
+  if (slideDir) panel.classList.add('slide-' + slideDir);
+  if (name === 'audit') updateAuditView();
+}
+
 document.querySelectorAll('nav.tabs button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('section.tab').forEach(s => s.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'audit') updateAuditView();
-  });
+  btn.addEventListener('click', () => activateTab(btn.dataset.tab));
 });
+
+// ===== スワイプでタブ切替 =====
+(function initSwipe() {
+  const EDGE = 24;        // iOS Safariの戻る/進むエッジジェスチャ回避帯(px)
+  const MIN_DX = 60;      // 横移動しきい値(px)
+  const MAX_RATIO = 0.6;  // abs(dy) > abs(dx)*0.6 なら縦スクロールとみなし無視
+  const MAX_MS = 600;     // これより遅いドラッグは無視
+  let sx = 0, sy = 0, st = 0, tracking = false;
+
+  document.addEventListener('touchstart', e => {
+    tracking = false;
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t.clientX < EDGE || t.clientX > innerWidth - EDGE) return;
+    if (e.target.closest('input, select, textarea')) return;
+    sx = t.clientX; sy = t.clientY; st = Date.now(); tracking = true;
+  }, {passive: true});
+
+  document.addEventListener('touchcancel', () => { tracking = false; }, {passive: true});
+
+  document.addEventListener('touchend', e => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Date.now() - st > MAX_MS) return;
+    if (Math.abs(dx) < MIN_DX) return;
+    if (Math.abs(dy) > Math.abs(dx) * MAX_RATIO) return;
+    const cur = TAB_ORDER.indexOf(document.querySelector('nav.tabs button.active').dataset.tab);
+    const next = dx < 0 ? cur + 1 : cur - 1;   // 左スワイプ=次のタブ、右スワイプ=前のタブ
+    if (next < 0 || next >= TAB_ORDER.length) return;  // 端のタブでは何もしない
+    activateTab(TAB_ORDER[next], dx < 0 ? 'left' : 'right');
+  }, {passive: true});
+})();
 
 buildDenomRows('entryDenoms', 'entry');
 buildDenomRows('auditDenoms', 'audit', true);
