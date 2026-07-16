@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>金庫現金管理</title>
+<style>
+:root{
+  --bg:#f2f4f7; --card:#ffffff; --ink:#1c2434; --sub:#68717f;
+  --accent:#0f6fde; --in:#0c8a4c; --out:#c2413b; --line:#e2e6ec;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  background:var(--bg); color:var(--ink); padding-bottom:56px;
+  font-feature-settings:"tnum";
+}
+header{
+  position:sticky; top:0; z-index:20; background:var(--ink); color:#fff;
+  padding:10px 16px; display:flex; justify-content:space-between; align-items:baseline; gap:8px;
+}
+header h1{font-size:16px; font-weight:600;}
+header .total{font-size:18px; font-weight:700;}
+header .total small{font-size:11px; font-weight:400; opacity:.75; margin-right:6px;}
+nav.tabs{
+  position:sticky; top:42px; z-index:19; display:flex; background:var(--card);
+  border-bottom:1px solid var(--line);
+}
+nav.tabs button{
+  flex:1; padding:12px 4px; font-size:14px; border:none; background:none; color:var(--sub);
+  border-bottom:3px solid transparent; cursor:pointer;
+}
+nav.tabs button.active{color:var(--accent); border-bottom-color:var(--accent); font-weight:600;}
+main{max-width:640px; margin:0 auto; padding:16px 12px;}
+section.tab{display:none;}
+section.tab.active{display:block;}
+.card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px;}
+.card h2{font-size:14px; color:var(--sub); font-weight:600; margin-bottom:12px;}
+table{width:100%; border-collapse:collapse; font-size:14px;}
+th,td{padding:8px 6px; text-align:right; border-bottom:1px solid var(--line);}
+th{color:var(--sub); font-weight:500; font-size:12px;}
+td:first-child, th:first-child{text-align:left;}
+tr.subtotal td{color:var(--sub); font-size:13px;}
+tr.total td{font-weight:700; font-size:15px; border-bottom:none;}
+.notice{background:#fff7e6; border:1px solid #f0dcae; border-radius:10px; padding:12px; font-size:13px; margin-bottom:16px; line-height:1.6;}
+.denom-row{display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--line);}
+.denom-row:last-child{border-bottom:none;}
+.denom-row .label{width:74px; font-size:14px; flex-shrink:0;}
+.denom-row button.step{
+  width:38px; height:38px; border-radius:9px; border:1px solid var(--line); background:#f7f8fa;
+  font-size:18px; color:var(--ink); cursor:pointer; flex-shrink:0;
+}
+.denom-row button.step:active{background:#e8ebf0;}
+.denom-row input{
+  width:70px; height:38px; text-align:right; font-size:16px; border:1px solid var(--line);
+  border-radius:9px; padding:0 8px;
+}
+.denom-row .sub{flex:1; text-align:right; font-size:13px; color:var(--sub);}
+.entry-total{display:flex; justify-content:space-between; align-items:baseline; padding:12px 4px 4px;}
+.entry-total .amount{font-size:22px; font-weight:700;}
+select,textarea,input[type="text"]{
+  width:100%; border:1px solid var(--line); border-radius:9px; padding:10px; font-size:15px;
+  background:#fff; color:var(--ink); font-family:inherit;
+}
+label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
+.btn{
+  display:block; width:100%; padding:14px; border:none; border-radius:10px;
+  background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; margin-top:14px;
+}
+.btn:active{opacity:.85;}
+.btn.secondary{background:#eef1f5; color:var(--ink); font-weight:500; font-size:14px; padding:11px;}
+.btn.danger{background:#fdeeee; color:var(--out);}
+.amount-in{color:var(--in);}
+.amount-out{color:var(--out);}
+.diff-zero{color:var(--sub);}
+.hist-item{border-bottom:1px solid var(--line); padding:10px 2px;}
+.hist-item:last-child{border-bottom:none;}
+.hist-head{display:flex; justify-content:space-between; align-items:baseline; gap:8px;}
+.hist-head .type{font-size:14px; font-weight:600;}
+.hist-head .amount{font-size:16px; font-weight:700; white-space:nowrap;}
+.hist-meta{font-size:12px; color:var(--sub); margin-top:2px; display:flex; justify-content:space-between; gap:8px;}
+.hist-item details{margin-top:6px;}
+.hist-item summary{font-size:12px; color:var(--accent); cursor:pointer;}
+.hist-item .detail-body{font-size:12px; color:var(--sub); padding:6px 0 2px; line-height:1.7;}
+.hist-item .reversed{opacity:.55;}
+.hist-item button.undo{
+  border:1px solid var(--line); background:#f7f8fa; border-radius:7px; padding:4px 10px;
+  font-size:12px; color:var(--out); cursor:pointer; margin-top:6px;
+}
+.badge{display:inline-block; font-size:10px; padding:1px 6px; border-radius:999px; margin-left:6px; vertical-align:middle;}
+.badge.in{background:#e2f5ea; color:var(--in);}
+.badge.out{background:#fbeaea; color:var(--out);}
+.badge.audit{background:#eef1f5; color:var(--sub);}
+#toast{
+  position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+  background:var(--ink); color:#fff; padding:10px 20px; border-radius:999px; font-size:14px;
+  opacity:0; pointer-events:none; transition:opacity .25s; z-index:50; white-space:nowrap;
+}
+#toast.show{opacity:.95;}
+.data-btns{display:flex; gap:8px; flex-wrap:wrap;}
+.data-btns .btn{flex:1; min-width:140px; margin-top:0;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>金庫現金管理</h1>
+  <div class="total"><small>帳簿残高</small><span id="headerTotal">0</span>円</div>
+</header>
+
+<nav class="tabs">
+  <button data-tab="balance" class="active">残高</button>
+  <button data-tab="entry">入出金</button>
+  <button data-tab="audit">実査</button>
+  <button data-tab="history">履歴</button>
+</nav>
+
+<main>
+
+<!-- ========== 残高 ========== -->
+<section class="tab active" id="tab-balance">
+  <div class="notice" id="firstUseNotice" hidden>
+    はじめにお使いの場合は、「実査」タブで金庫内の現金を金種ごとに数えて登録してください。
+    その結果が帳簿残高のスタート地点になります。
+  </div>
+  <div class="card">
+    <h2>金種別 帳簿残高</h2>
+    <table id="balanceTable"></table>
+  </div>
+</section>
+
+<!-- ========== 入出金 ========== -->
+<section class="tab" id="tab-entry">
+  <div class="card">
+    <h2>入出金の記録</h2>
+    <label class="field" for="entryType">種別</label>
+    <select id="entryType">
+      <optgroup label="入金（金庫に入れる）">
+        <option value="sales_in">売上金入金（レジ→金庫）</option>
+        <option value="change_supply">釣銭調達（銀行→金庫）</option>
+        <option value="other_in">その他入金</option>
+      </optgroup>
+      <optgroup label="出金（金庫から出す）">
+        <option value="change_out">釣銭払い出し（金庫→レジ）</option>
+        <option value="bank_deposit">銀行預け入れ（金庫→銀行）</option>
+        <option value="other_out">その他出金</option>
+      </optgroup>
+    </select>
+
+    <label class="field">金種別の枚数</label>
+    <div id="entryDenoms"></div>
+
+    <div class="entry-total">
+      <span>合計</span>
+      <span class="amount" id="entryTotal">0円</span>
+    </div>
+
+    <label class="field" for="entryMemo">メモ（任意）</label>
+    <input type="text" id="entryMemo" placeholder="例：レジ1号機へ釣銭補充">
+
+    <button class="btn" id="entrySubmit">記録する</button>
+  </div>
+</section>
+
+<!-- ========== 実査 ========== -->
+<section class="tab" id="tab-audit">
+  <div class="card">
+    <h2>実査（金庫内の現金を数えて照合）</h2>
+    <p style="font-size:13px; color:var(--sub); line-height:1.6; margin-bottom:12px;">
+      金庫内の実際の枚数を入力してください。帳簿残高との差異（過不足）を確認し、
+      確定すると帳簿が実査値に合わせて調整されます。
+    </p>
+    <div id="auditDenoms"></div>
+
+    <div class="card" style="margin:14px 0 0; padding:12px; background:#f7f8fa;">
+      <table style="font-size:13px;">
+        <tr><td>実査合計</td><td id="auditActualTotal">0円</td></tr>
+        <tr><td>帳簿残高</td><td id="auditBookTotal">0円</td></tr>
+        <tr class="total"><td>過不足</td><td id="auditDiffTotal">±0円</td></tr>
+      </table>
+    </div>
+
+    <label class="field" for="auditMemo">メモ（任意）</label>
+    <input type="text" id="auditMemo" placeholder="例：閉店後の実査">
+
+    <button class="btn secondary" id="auditPrefill">帳簿の枚数を実査欄にコピー</button>
+    <button class="btn" id="auditSubmit">照合を確定する</button>
+  </div>
+</section>
+
+<!-- ========== 履歴 ========== -->
+<section class="tab" id="tab-history">
+  <div class="card">
+    <h2>取引履歴</h2>
+    <div id="historyList"></div>
+  </div>
+  <div class="card">
+    <h2>データ管理</h2>
+    <div class="data-btns">
+      <button class="btn secondary" id="csvExport">CSVを書き出す</button>
+      <button class="btn secondary" id="jsonExport">バックアップ保存</button>
+      <button class="btn secondary" id="jsonImportBtn">バックアップ復元</button>
+      <button class="btn secondary danger" id="resetAll">全データ初期化</button>
+    </div>
+    <input type="file" id="jsonImportFile" accept=".json,application/json" hidden>
+    <p style="font-size:12px; color:var(--sub); margin-top:10px; line-height:1.6;">
+      データはこの端末のブラウザ（localStorage）にのみ保存されます。
+      端末の変更・ブラウザのデータ消去に備えて、定期的にバックアップ保存をおすすめします。
+    </p>
+  </div>
+</section>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// ===== 定数 =====
+const DENOMS = [10000, 5000, 1000, 500, 100, 50, 10, 5, 1];
+const BILLS = new Set([10000, 5000, 1000]);
+const STORAGE_KEY = 'kinko-cash-v1';
+
+const TYPE_LABELS = {
+  sales_in:      '売上金入金',
+  change_supply: '釣銭調達',
+  other_in:      'その他入金',
+  change_out:    '釣銭払い出し',
+  bank_deposit:  '銀行預け入れ',
+  other_out:     'その他出金',
+  audit:         '実査調整',
+  reversal:      '取消',
+};
+const IN_TYPES = new Set(['sales_in', 'change_supply', 'other_in']);
+
+// ===== 状態 =====
+// state.counts:  金種→帳簿上の枚数
+// transactions[].delta: 金種→符号付き枚数（＋が金庫に入る方向）
+let state = load();
+
+function emptyState() {
+  const counts = {};
+  DENOMS.forEach(d => counts[d] = 0);
+  return { version: 1, nextId: 1, counts, transactions: [] };
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return emptyState();
+    const s = JSON.parse(raw);
+    if (!s || typeof s !== 'object' || !s.counts || !Array.isArray(s.transactions)) return emptyState();
+    DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
+    if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
+    return s;
+  } catch (e) {
+    return emptyState();
+  }
+}
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+// ===== ユーティリティ =====
+const fmt = n => n.toLocaleString('ja-JP');
+const fmtSigned = n => (n > 0 ? '+' : n < 0 ? '−' : '±') + fmt(Math.abs(n));
+const sumDelta = delta => DENOMS.reduce((s, d) => s + d * (delta[d] || 0), 0);
+const bookTotal = () => DENOMS.reduce((s, d) => s + d * state.counts[d], 0);
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+function fmtDate(iso) {
+  const dt = new Date(iso);
+  const p = n => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}/${p(dt.getMonth() + 1)}/${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}`;
+}
+
+// ===== 金種入力欄の生成 =====
+function buildDenomRows(containerId, prefix) {
+  const box = document.getElementById(containerId);
+  box.innerHTML = '';
+  DENOMS.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'denom-row';
+    row.innerHTML =
+      `<span class="label">${fmt(d)}円</span>` +
+      `<button type="button" class="step" data-step="-1">−</button>` +
+      `<input type="number" id="${prefix}-${d}" min="0" step="1" inputmode="numeric" placeholder="0">` +
+      `<button type="button" class="step" data-step="1">＋</button>` +
+      `<span class="sub" id="${prefix}-sub-${d}"></span>`;
+    const input = row.querySelector('input');
+    row.querySelectorAll('button.step').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const v = Math.max(0, (parseInt(input.value, 10) || 0) + Number(btn.dataset.step));
+        input.value = v === 0 ? '' : v;
+        input.dispatchEvent(new Event('input'));
+      });
+    });
+    box.appendChild(row);
+  });
+}
+
+function readCounts(prefix) {
+  const counts = {};
+  DENOMS.forEach(d => {
+    const v = parseInt(document.getElementById(`${prefix}-${d}`).value, 10);
+    counts[d] = Number.isInteger(v) && v > 0 ? v : 0;
+  });
+  return counts;
+}
+
+function clearCounts(prefix) {
+  DENOMS.forEach(d => { document.getElementById(`${prefix}-${d}`).value = ''; });
+}
+
+// ===== 残高タブ =====
+function renderBalance() {
+  const tbl = document.getElementById('balanceTable');
+  let billSum = 0, coinSum = 0;
+  let html = '<tr><th>金種</th><th>枚数</th><th>金額</th></tr>';
+  DENOMS.forEach(d => {
+    const n = state.counts[d];
+    const amt = d * n;
+    if (BILLS.has(d)) billSum += amt; else coinSum += amt;
+    html += `<tr><td>${fmt(d)}円</td><td>${fmt(n)} 枚</td><td>${fmt(amt)}円</td></tr>`;
+  });
+  html += `<tr class="subtotal"><td>紙幣 計</td><td></td><td>${fmt(billSum)}円</td></tr>`;
+  html += `<tr class="subtotal"><td>硬貨 計</td><td></td><td>${fmt(coinSum)}円</td></tr>`;
+  html += `<tr class="total"><td>合計</td><td></td><td>${fmt(billSum + coinSum)}円</td></tr>`;
+  tbl.innerHTML = html;
+
+  document.getElementById('headerTotal').textContent = fmt(bookTotal());
+  document.getElementById('firstUseNotice').hidden =
+    !(state.transactions.length === 0 && bookTotal() === 0);
+}
+
+// ===== 入出金タブ =====
+function updateEntryTotal() {
+  const counts = readCounts('entry');
+  let total = 0;
+  DENOMS.forEach(d => {
+    const amt = d * counts[d];
+    total += amt;
+    document.getElementById(`entry-sub-${d}`).textContent = amt > 0 ? fmt(amt) + '円' : '';
+  });
+  const isIn = IN_TYPES.has(document.getElementById('entryType').value);
+  const el = document.getElementById('entryTotal');
+  el.textContent = (total > 0 ? (isIn ? '+' : '−') : '') + fmt(total) + '円';
+  el.className = 'amount ' + (total > 0 ? (isIn ? 'amount-in' : 'amount-out') : '');
+}
+
+function submitEntry() {
+  const type = document.getElementById('entryType').value;
+  const counts = readCounts('entry');
+  const isIn = IN_TYPES.has(type);
+  const total = DENOMS.reduce((s, d) => s + d * counts[d], 0);
+
+  if (total === 0) { toast('枚数を入力してください'); return; }
+
+  if (!isIn) {
+    const shortage = DENOMS.filter(d => counts[d] > state.counts[d]);
+    if (shortage.length) {
+      toast(`帳簿の枚数が足りません：${shortage.map(d => fmt(d) + '円').join('、')}`);
+      return;
+    }
+  }
+
+  const delta = {};
+  DENOMS.forEach(d => { if (counts[d]) delta[d] = isIn ? counts[d] : -counts[d]; });
+
+  addTransaction({
+    type,
+    delta,
+    memo: document.getElementById('entryMemo').value.trim(),
+  });
+
+  clearCounts('entry');
+  document.getElementById('entryMemo').value = '';
+  updateEntryTotal();
+  toast(`${TYPE_LABELS[type]} ${fmt(total)}円 を記録しました`);
+}
+
+// ===== 実査タブ =====
+function updateAuditView() {
+  const actual = readCounts('audit');
+  let actualTotal = 0;
+  DENOMS.forEach(d => {
+    actualTotal += d * actual[d];
+    const diff = actual[d] - state.counts[d];
+    const el = document.getElementById(`audit-sub-${d}`);
+    if (diff === 0) {
+      el.textContent = '';
+      el.className = 'sub';
+    } else {
+      el.textContent = fmtSigned(diff) + '枚';
+      el.className = 'sub ' + (diff > 0 ? 'amount-in' : 'amount-out');
+    }
+  });
+  const book = bookTotal();
+  const diffTotal = actualTotal - book;
+  document.getElementById('auditActualTotal').textContent = fmt(actualTotal) + '円';
+  document.getElementById('auditBookTotal').textContent = fmt(book) + '円';
+  const diffEl = document.getElementById('auditDiffTotal');
+  diffEl.textContent = fmtSigned(diffTotal) + '円';
+  diffEl.className = diffTotal > 0 ? 'amount-in' : diffTotal < 0 ? 'amount-out' : 'diff-zero';
+}
+
+function prefillAudit() {
+  DENOMS.forEach(d => {
+    document.getElementById(`audit-${d}`).value = state.counts[d] || '';
+  });
+  updateAuditView();
+}
+
+function submitAudit() {
+  const actual = readCounts('audit');
+  const delta = {};
+  DENOMS.forEach(d => {
+    const diff = actual[d] - state.counts[d];
+    if (diff !== 0) delta[d] = diff;
+  });
+  const diffTotal = sumDelta(delta);
+  const memo = document.getElementById('auditMemo').value.trim();
+
+  const msg = Object.keys(delta).length === 0
+    ? '帳簿残高と一致しています。照合記録を残しますか？'
+    : `過不足 ${fmtSigned(diffTotal)}円 があります。帳簿を実査値に合わせて調整しますか？`;
+  if (!confirm(msg)) return;
+
+  addTransaction({
+    type: 'audit',
+    delta,
+    memo: memo || (Object.keys(delta).length === 0 ? '照合一致' : '実査による調整'),
+  });
+
+  clearCounts('audit');
+  document.getElementById('auditMemo').value = '';
+  updateAuditView();
+  toast(Object.keys(delta).length === 0 ? '照合一致を記録しました' : `過不足 ${fmtSigned(diffTotal)}円 を調整しました`);
+}
+
+// ===== 取引の追加・取消 =====
+function addTransaction({ type, delta, memo, reverses }) {
+  DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
+  const tx = {
+    id: state.nextId++,
+    at: new Date().toISOString(),
+    type,
+    delta,
+    amount: sumDelta(delta),
+    memo: memo || '',
+  };
+  if (reverses) tx.reverses = reverses;
+  state.transactions.push(tx);
+  save();
+  renderAll();
+  return tx;
+}
+
+function reverseTransaction(id) {
+  const tx = state.transactions.find(t => t.id === id);
+  if (!tx || tx.reversedBy) return;
+  if (!confirm(`「${TYPE_LABELS[tx.type]} ${fmtSigned(tx.amount)}円」を取り消しますか？\n（逆方向の取引が追加されます）`)) return;
+
+  const delta = {};
+  DENOMS.forEach(d => { if (tx.delta[d]) delta[d] = -tx.delta[d]; });
+  const shortage = DENOMS.filter(d => state.counts[d] + (delta[d] || 0) < 0);
+  if (shortage.length) {
+    toast('取り消すと帳簿の枚数がマイナスになるため取消できません');
+    return;
+  }
+
+  const rev = addTransaction({ type: 'reversal', delta, memo: `記録 #${tx.id} の取消`, reverses: tx.id });
+  tx.reversedBy = rev.id;
+  save();
+  renderAll();
+  toast('取り消しました');
+}
+
+// ===== 履歴タブ =====
+function renderHistory() {
+  const box = document.getElementById('historyList');
+  if (state.transactions.length === 0) {
+    box.innerHTML = '<p style="font-size:13px; color:var(--sub);">まだ記録がありません。</p>';
+    return;
+  }
+  box.innerHTML = '';
+  [...state.transactions].reverse().forEach(tx => {
+    const item = document.createElement('div');
+    item.className = 'hist-item';
+    const isAudit = tx.type === 'audit';
+    const isRev = tx.type === 'reversal';
+    const badge = isAudit || isRev
+      ? '<span class="badge audit">' + (isAudit ? '実査' : '取消') + '</span>'
+      : (IN_TYPES.has(tx.type) ? '<span class="badge in">入金</span>' : '<span class="badge out">出金</span>');
+    const amtClass = tx.amount > 0 ? 'amount-in' : tx.amount < 0 ? 'amount-out' : 'diff-zero';
+    const detail = DENOMS.filter(d => tx.delta[d])
+      .map(d => `${fmt(d)}円 × ${fmtSigned(tx.delta[d])}枚`).join('　') || '（枚数変動なし）';
+
+    item.innerHTML =
+      `<div class="${tx.reversedBy ? 'reversed' : ''}">` +
+        `<div class="hist-head">` +
+          `<span class="type">${TYPE_LABELS[tx.type]}${badge}</span>` +
+          `<span class="amount ${amtClass}">${fmtSigned(tx.amount)}円</span>` +
+        `</div>` +
+        `<div class="hist-meta"><span>#${tx.id}　${fmtDate(tx.at)}</span><span>${escapeHtml(tx.memo)}</span></div>` +
+        `<details><summary>金種明細</summary><div class="detail-body">${detail}</div></details>` +
+      `</div>`;
+
+    if (!isRev && !tx.reversedBy) {
+      const btn = document.createElement('button');
+      btn.className = 'undo';
+      btn.textContent = '取消';
+      btn.addEventListener('click', () => reverseTransaction(tx.id));
+      item.appendChild(btn);
+    } else if (tx.reversedBy) {
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:11px; color:var(--sub); margin-top:4px;';
+      note.textContent = `取消済み（#${tx.reversedBy}）`;
+      item.appendChild(note);
+    }
+    box.appendChild(item);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ===== データ管理 =====
+function download(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function today() {
+  const dt = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}${p(dt.getMonth() + 1)}${p(dt.getDate())}`;
+}
+
+function exportCsv() {
+  const header = ['ID', '日時', '種別', '金額', 'メモ', ...DENOMS.map(d => fmt(d) + '円')];
+  const rows = state.transactions.map(tx => [
+    tx.id, fmtDate(tx.at), TYPE_LABELS[tx.type], tx.amount,
+    '"' + (tx.memo || '').replace(/"/g, '""') + '"',
+    ...DENOMS.map(d => tx.delta[d] || 0),
+  ].join(','));
+  download(`金庫取引履歴_${today()}.csv`, '﻿' + [header.join(','), ...rows].join('\r\n'), 'text/csv');
+  toast('CSVを書き出しました');
+}
+
+function exportJson() {
+  download(`金庫バックアップ_${today()}.json`, JSON.stringify(state, null, 2), 'application/json');
+  toast('バックアップを保存しました');
+}
+
+function importJson(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const s = JSON.parse(reader.result);
+      if (!s || !s.counts || !Array.isArray(s.transactions)) throw new Error('形式が違います');
+      if (!confirm('現在のデータをバックアップの内容で置き換えます。よろしいですか？')) return;
+      DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
+      if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
+      state = s;
+      save();
+      renderAll();
+      updateEntryTotal();
+      updateAuditView();
+      toast('バックアップを復元しました');
+    } catch (e) {
+      toast('復元できません：ファイル形式が正しくありません');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function resetAll() {
+  if (!confirm('すべての残高・履歴を削除して初期状態に戻します。よろしいですか？')) return;
+  if (!confirm('本当に削除しますか？（この操作は元に戻せません。必要ならバックアップ保存を先に行ってください）')) return;
+  state = emptyState();
+  save();
+  renderAll();
+  updateEntryTotal();
+  updateAuditView();
+  toast('初期化しました');
+}
+
+// ===== タブ切替・初期化 =====
+function renderAll() {
+  renderBalance();
+  renderHistory();
+}
+
+document.querySelectorAll('nav.tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('section.tab').forEach(s => s.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'audit') updateAuditView();
+  });
+});
+
+buildDenomRows('entryDenoms', 'entry');
+buildDenomRows('auditDenoms', 'audit');
+document.getElementById('entryDenoms').addEventListener('input', updateEntryTotal);
+document.getElementById('auditDenoms').addEventListener('input', updateAuditView);
+document.getElementById('entryType').addEventListener('change', updateEntryTotal);
+document.getElementById('entrySubmit').addEventListener('click', submitEntry);
+document.getElementById('auditPrefill').addEventListener('click', prefillAudit);
+document.getElementById('auditSubmit').addEventListener('click', submitAudit);
+document.getElementById('csvExport').addEventListener('click', exportCsv);
+document.getElementById('jsonExport').addEventListener('click', exportJson);
+document.getElementById('jsonImportBtn').addEventListener('click', () =>
+  document.getElementById('jsonImportFile').click());
+document.getElementById('jsonImportFile').addEventListener('change', e => {
+  if (e.target.files[0]) importJson(e.target.files[0]);
+  e.target.value = '';
+});
+document.getElementById('resetAll').addEventListener('click', resetAll);
+
+renderAll();
+updateEntryTotal();
+updateAuditView();
+</script>
+</body>
+</html>
