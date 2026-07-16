@@ -55,6 +55,9 @@ tr.total td{font-weight:700; font-size:15px; border-bottom:none;}
   width:70px; height:38px; text-align:right; font-size:16px; border:1px solid var(--line);
   border-radius:9px; padding:0 8px;
 }
+.denom-row input.roll, .denom-row input.loose{width:58px;}
+.denom-row .unit{font-size:12px; color:var(--sub); flex-shrink:0;}
+.hint{font-size:12px; color:var(--sub); margin-top:4px; line-height:1.6;}
 .denom-row .sub{flex:1; text-align:right; font-size:13px; color:var(--sub);}
 .entry-total{display:flex; justify-content:space-between; align-items:baseline; padding:12px 4px 4px;}
 .entry-total .amount{font-size:22px; font-weight:700;}
@@ -133,6 +136,7 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
       <tr><td>基準額</td><td id="baseAmountCell"></td></tr>
       <tr><td>帳簿残高</td><td id="baseBookCell"></td></tr>
       <tr class="total"><td>差額</td><td id="baseDiffCell"></td></tr>
+      <tr id="damagedRow" hidden><td>うち損傷金（前回実査）</td><td id="damagedCell"></td></tr>
     </table>
     <button class="btn secondary" id="baseEdit">基準額を変更</button>
   </div>
@@ -180,10 +184,18 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
   <div class="card">
     <h2>実査（金庫内の現金を数えて照合）</h2>
     <p style="font-size:13px; color:var(--sub); line-height:1.6; margin-bottom:12px;">
-      金庫内の実際の枚数を入力してください。帳簿残高との差異（過不足）を確認し、
-      確定すると帳簿が実査値に合わせて調整されます。
+      金庫内の実際の枚数を入力してください。硬貨は棒金（50枚巻き）の本数とバラの枚数で
+      入力できます。帳簿残高との差異（過不足）を確認し、確定すると帳簿が実査値に合わせて調整されます。
     </p>
     <div id="auditDenoms"></div>
+
+    <label class="field" for="auditDamaged">うち損傷金（任意・円）</label>
+    <input type="number" id="auditDamaged" min="0" step="1" inputmode="numeric" placeholder="0"
+           style="width:140px; height:38px; text-align:right; font-size:16px;">
+    <p class="hint">
+      破れ・汚損したお札や変形硬貨などの合計額。上の金種別枚数には<strong>含めて</strong>数え、
+      ここには参考として記録してください（銀行での交換用のメモになります）。
+    </p>
 
     <div class="card" style="margin:14px 0 0; padding:12px; background:#f7f8fa;">
       <table style="font-size:13px;">
@@ -300,26 +312,37 @@ function fmtDate(iso) {
 }
 
 // ===== 金種入力欄の生成 =====
-function buildDenomRows(containerId, prefix) {
+const ROLL_SIZE = 50; // 棒金1本あたりの枚数
+
+function buildDenomRows(containerId, prefix, withRolls) {
   const box = document.getElementById(containerId);
   box.innerHTML = '';
   DENOMS.forEach(d => {
     const row = document.createElement('div');
     row.className = 'denom-row';
-    row.innerHTML =
-      `<span class="label">${fmt(d)}円</span>` +
-      `<button type="button" class="step" data-step="-1">−</button>` +
-      `<input type="number" id="${prefix}-${d}" min="0" step="1" inputmode="numeric" placeholder="0">` +
-      `<button type="button" class="step" data-step="1">＋</button>` +
-      `<span class="sub" id="${prefix}-sub-${d}"></span>`;
-    const input = row.querySelector('input');
-    row.querySelectorAll('button.step').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const v = Math.max(0, (parseInt(input.value, 10) || 0) + Number(btn.dataset.step));
-        input.value = v === 0 ? '' : v;
-        input.dispatchEvent(new Event('input'));
+    if (withRolls && !BILLS.has(d)) {
+      // 硬貨：棒金（本）＋バラ（枚）
+      row.innerHTML =
+        `<span class="label">${fmt(d)}円</span>` +
+        `<input type="number" class="roll" id="${prefix}-roll-${d}" min="0" step="1" inputmode="numeric" placeholder="0"><span class="unit">本</span>` +
+        `<input type="number" class="loose" id="${prefix}-${d}" min="0" step="1" inputmode="numeric" placeholder="0"><span class="unit">枚</span>` +
+        `<span class="sub" id="${prefix}-sub-${d}"></span>`;
+    } else {
+      row.innerHTML =
+        `<span class="label">${fmt(d)}円</span>` +
+        `<button type="button" class="step" data-step="-1">−</button>` +
+        `<input type="number" id="${prefix}-${d}" min="0" step="1" inputmode="numeric" placeholder="0">` +
+        `<button type="button" class="step" data-step="1">＋</button>` +
+        `<span class="sub" id="${prefix}-sub-${d}"></span>`;
+      const input = row.querySelector(`#${CSS.escape(prefix + '-' + d)}`);
+      row.querySelectorAll('button.step').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const v = Math.max(0, (parseInt(input.value, 10) || 0) + Number(btn.dataset.step));
+          input.value = v === 0 ? '' : v;
+          input.dispatchEvent(new Event('input'));
+        });
       });
-    });
+    }
     box.appendChild(row);
   });
 }
@@ -328,13 +351,23 @@ function readCounts(prefix) {
   const counts = {};
   DENOMS.forEach(d => {
     const v = parseInt(document.getElementById(`${prefix}-${d}`).value, 10);
-    counts[d] = Number.isInteger(v) && v > 0 ? v : 0;
+    let n = Number.isInteger(v) && v > 0 ? v : 0;
+    const rollEl = document.getElementById(`${prefix}-roll-${d}`);
+    if (rollEl) {
+      const r = parseInt(rollEl.value, 10);
+      if (Number.isInteger(r) && r > 0) n += r * ROLL_SIZE;
+    }
+    counts[d] = n;
   });
   return counts;
 }
 
 function clearCounts(prefix) {
-  DENOMS.forEach(d => { document.getElementById(`${prefix}-${d}`).value = ''; });
+  DENOMS.forEach(d => {
+    document.getElementById(`${prefix}-${d}`).value = '';
+    const rollEl = document.getElementById(`${prefix}-roll-${d}`);
+    if (rollEl) rollEl.value = '';
+  });
 }
 
 // ===== 残高タブ =====
@@ -364,6 +397,15 @@ function renderBalance() {
   const diffCell = document.getElementById('baseDiffCell');
   diffCell.textContent = fmtSigned(diff) + '円';
   diffCell.className = diff > 0 ? 'amount-in' : diff < 0 ? 'amount-out' : 'diff-zero';
+
+  const lastAudit = [...state.transactions].reverse().find(t => t.type === 'audit');
+  const dmgRow = document.getElementById('damagedRow');
+  if (lastAudit && lastAudit.damaged) {
+    dmgRow.hidden = false;
+    document.getElementById('damagedCell').textContent = fmt(lastAudit.damaged) + '円';
+  } else {
+    dmgRow.hidden = true;
+  }
 }
 
 function editBaseAmount() {
@@ -432,13 +474,11 @@ function updateAuditView() {
     actualTotal += d * actual[d];
     const diff = actual[d] - state.counts[d];
     const el = document.getElementById(`audit-sub-${d}`);
-    if (diff === 0) {
-      el.textContent = '';
-      el.className = 'sub';
-    } else {
-      el.textContent = fmtSigned(diff) + '枚';
-      el.className = 'sub ' + (diff > 0 ? 'amount-in' : 'amount-out');
-    }
+    const parts = [];
+    if (document.getElementById(`audit-roll-${d}`) && actual[d] > 0) parts.push(`計${fmt(actual[d])}枚`);
+    if (diff !== 0) parts.push(fmtSigned(diff) + '枚');
+    el.textContent = parts.join('　');
+    el.className = 'sub ' + (diff > 0 ? 'amount-in' : diff < 0 ? 'amount-out' : '');
   });
   const book = bookTotal();
   const diffTotal = actualTotal - book;
@@ -455,7 +495,14 @@ function updateAuditView() {
 
 function prefillAudit() {
   DENOMS.forEach(d => {
-    document.getElementById(`audit-${d}`).value = state.counts[d] || '';
+    const n = state.counts[d];
+    const rollEl = document.getElementById(`audit-roll-${d}`);
+    if (rollEl) {
+      rollEl.value = Math.floor(n / ROLL_SIZE) || '';
+      document.getElementById(`audit-${d}`).value = (n % ROLL_SIZE) || '';
+    } else {
+      document.getElementById(`audit-${d}`).value = n || '';
+    }
   });
   updateAuditView();
 }
@@ -470,6 +517,11 @@ function submitAudit() {
   const diffTotal = sumDelta(delta);
   const memo = document.getElementById('auditMemo').value.trim();
 
+  const dmgRaw = parseInt(document.getElementById('auditDamaged').value, 10);
+  const damaged = Number.isInteger(dmgRaw) && dmgRaw > 0 ? dmgRaw : 0;
+  const actualTotal = DENOMS.reduce((s, d) => s + d * actual[d], 0);
+  if (damaged > actualTotal) { toast('損傷金が実査合計を超えています'); return; }
+
   const msg = Object.keys(delta).length === 0
     ? '帳簿残高と一致しています。照合記録を残しますか？'
     : `過不足 ${fmtSigned(diffTotal)}円 があります。帳簿を実査値に合わせて調整しますか？`;
@@ -479,16 +531,18 @@ function submitAudit() {
     type: 'audit',
     delta,
     memo: memo || (Object.keys(delta).length === 0 ? '照合一致' : '実査による調整'),
+    damaged,
   });
 
   clearCounts('audit');
   document.getElementById('auditMemo').value = '';
+  document.getElementById('auditDamaged').value = '';
   updateAuditView();
   toast(Object.keys(delta).length === 0 ? '照合一致を記録しました' : `過不足 ${fmtSigned(diffTotal)}円 を調整しました`);
 }
 
 // ===== 取引の追加・取消 =====
-function addTransaction({ type, delta, memo, reverses }) {
+function addTransaction({ type, delta, memo, reverses, damaged }) {
   DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
   const tx = {
     id: state.nextId++,
@@ -499,6 +553,7 @@ function addTransaction({ type, delta, memo, reverses }) {
     memo: memo || '',
   };
   if (reverses) tx.reverses = reverses;
+  if (damaged) tx.damaged = damaged;
   state.transactions.push(tx);
   save();
   renderAll();
@@ -551,8 +606,9 @@ function renderHistory() {
       ? '<span class="badge audit">' + (isAudit ? '実査' : '取消') + '</span>'
       : (IN_TYPES.has(tx.type) ? '<span class="badge in">入金</span>' : '<span class="badge out">出金</span>');
     const amtClass = tx.amount > 0 ? 'amount-in' : tx.amount < 0 ? 'amount-out' : 'diff-zero';
-    const detail = DENOMS.filter(d => tx.delta[d])
+    let detail = DENOMS.filter(d => tx.delta[d])
       .map(d => `${fmt(d)}円 × ${fmtSigned(tx.delta[d])}枚`).join('　') || '（枚数変動なし）';
+    if (tx.damaged) detail += `<br>うち損傷金 ${fmt(tx.damaged)}円`;
 
     item.innerHTML =
       `<div class="${tx.reversedBy ? 'reversed' : ''}">` +
@@ -602,10 +658,11 @@ function today() {
 }
 
 function exportCsv() {
-  const header = ['ID', '日時', '種別', '金額', 'メモ', ...DENOMS.map(d => fmt(d) + '円')];
+  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金', ...DENOMS.map(d => fmt(d) + '円')];
   const rows = state.transactions.map(tx => [
     tx.id, fmtDate(tx.at), TYPE_LABELS[tx.type], tx.amount,
     '"' + (tx.memo || '').replace(/"/g, '""') + '"',
+    tx.damaged || 0,
     ...DENOMS.map(d => tx.delta[d] || 0),
   ].join(','));
   download(`金庫取引履歴_${today()}.csv`, '﻿' + [header.join(','), ...rows].join('\r\n'), 'text/csv');
@@ -668,7 +725,7 @@ document.querySelectorAll('nav.tabs button').forEach(btn => {
 });
 
 buildDenomRows('entryDenoms', 'entry');
-buildDenomRows('auditDenoms', 'audit');
+buildDenomRows('auditDenoms', 'audit', true);
 document.getElementById('entryDenoms').addEventListener('input', updateEntryTotal);
 document.getElementById('auditDenoms').addEventListener('input', updateAuditView);
 document.getElementById('entryType').addEventListener('change', updateEntryTotal);
