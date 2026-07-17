@@ -96,6 +96,11 @@ class MockRTDB:
                 headers['ETag'] = self.etag
             route.fulfill(status=200, headers=headers, body=json.dumps(val))
         elif request.method == 'PUT':
+            # 実 Firebase の仕様: print=silent 等のパラメータと if-match は併用不可（400）
+            if 'print=silent' in request.url and request.headers.get('if-match') is not None:
+                route.fulfill(status=400, headers=self.cors(),
+                              body='{"error":"Mixing print=silent and if-match is not supported"}')
+                return
             if self.force_412 > 0:
                 self.force_412 -= 1
                 route.fulfill(status=412, headers=self.cors({'ETag': self.etag}), body='{}')

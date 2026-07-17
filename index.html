@@ -949,8 +949,9 @@ async function syncNow() {
       }
 
       if (mergedSig !== remoteSig) {
+        // 注意: RTDB は print=silent と if-match の併用を 400 で拒否するため素の URL で PUT する
         const rev = newUid();
-        const put = await fetch(storeUrl('') + '?print=silent', {
+        const put = await fetch(storeUrl(''), {
           method: 'PUT',
           headers: { 'if-match': etag, 'Content-Type': 'application/json' },
           body: JSON.stringify({ meta: { rev, at: Date.now() }, data: state }),
