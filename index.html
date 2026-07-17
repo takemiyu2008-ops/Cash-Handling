@@ -822,7 +822,7 @@ function resetAll() {
 // ===== クラウド同期（Firebase Realtime Database / REST APIのみ・SDK不使用） =====
 // SETUP.md の手順で Firebase プロジェクトを作成し、データベースURLを下の定数に設定する。
 // 空文字のままなら同期機能は完全に無効（従来どおりこの端末のみに保存）。
-const SYNC_DB_URL = '';
+const SYNC_DB_URL = 'https://kinko-sync-default-rtdb.asia-southeast1.firebasedatabase.app';
 const SYNC_KEY = 'kinko-sync-v1';
 
 const sync = { storeId: null, status: 'unset', busy: false, pending: false, lastRev: null };

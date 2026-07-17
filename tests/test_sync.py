@@ -321,11 +321,13 @@ def main():
     # 配信用ディレクトリ: 素の index.html と、SYNC_DB_URL を注入した synced.html
     srv_dir = tempfile.mkdtemp(prefix='kinko-test-')
     src = (ROOT / 'index.html').read_text(encoding='utf-8')
-    assert "const SYNC_DB_URL = '';" in src, 'SYNC_DB_URL 定数が見つかりません'
-    (Path(srv_dir) / 'index.html').write_text(src, encoding='utf-8')
+    pat = re.compile(r"const SYNC_DB_URL = '[^']*';")
+    assert pat.search(src), 'SYNC_DB_URL 定数が見つかりません'
+    # 回帰テスト用は URL を空に（ローカル専用動作）、同期テスト用はモック URL に差し替える
+    (Path(srv_dir) / 'index.html').write_text(
+        pat.sub("const SYNC_DB_URL = '';", src), encoding='utf-8')
     (Path(srv_dir) / 'synced.html').write_text(
-        src.replace("const SYNC_DB_URL = '';", f"const SYNC_DB_URL = '{FAKE_DB}';"),
-        encoding='utf-8')
+        pat.sub(f"const SYNC_DB_URL = '{FAKE_DB}';", src), encoding='utf-8')
 
     handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=srv_dir, **kw)
     httpd = http.server.ThreadingHTTPServer(('127.0.0.1', PORT), handler)
