@@ -110,6 +110,27 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
 #toast.show{opacity:.95;}
 .data-btns{display:flex; gap:8px; flex-wrap:wrap;}
 .data-btns .btn{flex:1; min-width:140px; margin-top:0;}
+.sync-chip{
+  display:inline-block; font-size:10px; padding:2px 8px; border-radius:999px; border:none;
+  margin-top:3px; cursor:pointer; color:#fff; background:rgba(255,255,255,.16); opacity:.9;
+}
+.sync-chip.ok{background:#0c8a4c;}
+.sync-chip.syncing{background:#0f6fde;}
+.sync-chip.offline{background:#8a6d1f;}
+.sync-chip.error{background:#c2413b;}
+.modal-overlay{
+  position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.45); z-index:40;
+  display:none; align-items:center; justify-content:center; padding:20px;
+}
+.modal-overlay.show{display:flex;}
+.modal{background:var(--card); border-radius:14px; padding:20px; width:100%; max-width:380px;}
+.modal h2{font-size:15px; margin-bottom:8px;}
+.modal p.desc{font-size:13px; color:var(--sub); line-height:1.7; margin-bottom:4px;}
+.modal .msg{font-size:13px; color:var(--out); min-height:18px; margin-top:8px;}
+input[type="password"]{
+  width:100%; border:1px solid var(--line); border-radius:9px; padding:10px; font-size:15px;
+  background:#fff; color:var(--ink); font-family:inherit;
+}
 </style>
 </head>
 <body>
@@ -119,6 +140,7 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
   <div>
     <h1>金庫現金管理</h1>
     <div class="clock" id="clock"></div>
+    <button type="button" class="sync-chip unset" id="syncChip">同期未設定</button>
   </div>
   <div class="total"><small>帳簿残高</small><span id="headerTotal">0</span>円</div>
 </header>
@@ -235,10 +257,11 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
       <button class="btn secondary" id="csvExport">CSVを書き出す</button>
       <button class="btn secondary" id="jsonExport">バックアップ保存</button>
       <button class="btn secondary" id="jsonImportBtn">バックアップ復元</button>
+      <button class="btn secondary" id="syncSettings">クラウド同期設定</button>
       <button class="btn secondary danger" id="resetAll">全データ初期化</button>
     </div>
     <input type="file" id="jsonImportFile" accept=".json,application/json" hidden>
-    <p style="font-size:12px; color:var(--sub); margin-top:10px; line-height:1.6;">
+    <p style="font-size:12px; color:var(--sub); margin-top:10px; line-height:1.6;" id="storageNote">
       データはこの端末のブラウザ（localStorage）にのみ保存されます。
       端末の変更・ブラウザのデータ消去に備えて、定期的にバックアップ保存をおすすめします。
     </p>
@@ -246,6 +269,36 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
 </section>
 
 </main>
+
+<div class="modal-overlay" id="syncOverlay">
+  <div class="modal">
+    <h2>クラウド同期設定</h2>
+    <div id="syncNoServerBox" hidden>
+      <p class="desc">
+        クラウド同期の準備（Firebase の設定）がまだ済んでいません。
+        管理者の方は同梱の SETUP.md の手順に沿って設定してください。
+        設定が済むまで、データはこの端末にのみ保存されます。
+      </p>
+    </div>
+    <div id="syncSetupForm" hidden>
+      <p class="desc">
+        店の共有パスコードを入力すると、同じパスコードを設定した全端末で
+        同じデータが自動的に共有されます。
+      </p>
+      <label class="field" for="syncPasscode">共有パスコード（8文字以上を推奨）</label>
+      <input type="password" id="syncPasscode" autocomplete="off">
+      <div class="msg" id="syncMsg"></div>
+      <button class="btn" id="syncConnect">接続する</button>
+    </div>
+    <div id="syncConnectedBox" hidden>
+      <p class="desc">
+        クラウド同期は<strong>有効</strong>です。記録は同じパスコードの全端末で共有されています。
+      </p>
+      <button class="btn secondary danger" id="syncDisconnect">この端末の同期を解除</button>
+    </div>
+    <button class="btn secondary" id="syncClose">閉じる</button>
+  </div>
+</div>
 
 <div id="toast"></div>
 
@@ -278,25 +331,58 @@ let state = load();
 function emptyState() {
   const counts = {};
   DENOMS.forEach(d => counts[d] = 0);
-  return { version: 1, nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, counts, transactions: [] };
+  return { version: 1, gen: Date.now(), nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, baseAmountAt: 0, counts, transactions: [] };
+}
+
+function newUid() {
+  const rand = (crypto.randomUUID ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10));
+  return Date.now().toString(36) + '-' + rand;
+}
+
+// state の欠落フィールド補完と旧形式からの移行。
+// クラウド同期（RTDB は空オブジェクトを保存しない）や古いバックアップ復元でも
+// ここを通せば安全な形になる。
+function normalizeState(s) {
+  if (!s || typeof s !== 'object' || !s.counts) return null;
+  // RTDB は空配列を保存しないため、取引ゼロの state は transactions ごと欠落して戻ってくる
+  if (!Array.isArray(s.transactions)) s.transactions = [];
+  DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
+  if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
+  if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
+  if (!Number.isInteger(s.gen)) s.gen = Date.now();
+  if (!Number.isInteger(s.baseAmountAt)) s.baseAmountAt = 0;
+  s.transactions.forEach(tx => {
+    if (!tx.delta || typeof tx.delta !== 'object') tx.delta = {};
+    if (typeof tx.memo !== 'string') tx.memo = '';
+    if (!tx.uid) tx.uid = 'm' + tx.id;
+  });
+  // 旧形式では reverses / reversedBy が連番 id だったため uid に変換する
+  const uidById = {};
+  s.transactions.forEach(tx => { uidById[tx.id] = tx.uid; });
+  s.transactions.forEach(tx => {
+    if (typeof tx.reverses === 'number') tx.reverses = uidById[tx.reverses] || tx.reverses;
+    if (typeof tx.reversedBy === 'number') tx.reversedBy = uidById[tx.reversedBy] || tx.reversedBy;
+  });
+  return s;
 }
 
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return emptyState();
-    const s = JSON.parse(raw);
-    if (!s || typeof s !== 'object' || !s.counts || !Array.isArray(s.transactions)) return emptyState();
-    DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
-    if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
-    if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
-    return s;
+    return normalizeState(JSON.parse(raw)) || emptyState();
   } catch (e) {
     return emptyState();
   }
 }
 
 function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  scheduleSync();
+}
+
+function saveLocalOnly() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
@@ -438,6 +524,7 @@ function editBaseAmount() {
   const v = parseInt(String(input).replace(/[,，\s]/g, ''), 10);
   if (!Number.isInteger(v) || v < 0) { toast('金額は0以上の整数で入力してください'); return; }
   state.baseAmount = v;
+  state.baseAmountAt = Date.now();
   save();
   renderAll();
   updateAuditView();
@@ -570,6 +657,7 @@ function addTransaction({ type, delta, memo, reverses, damaged }) {
   DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
   const tx = {
     id: state.nextId++,
+    uid: newUid(),
     at: new Date().toISOString(),
     type,
     delta,
@@ -584,8 +672,8 @@ function addTransaction({ type, delta, memo, reverses, damaged }) {
   return tx;
 }
 
-function reverseTransaction(id) {
-  const tx = state.transactions.find(t => t.id === id);
+function reverseTransaction(uid) {
+  const tx = state.transactions.find(t => t.uid === uid);
   if (!tx || tx.reversedBy) return;
   if (!confirm(`「${TYPE_LABELS[tx.type]} ${fmtSigned(tx.amount)}円」を取り消しますか？\n（逆方向の取引が追加されます）`)) return;
 
@@ -597,8 +685,8 @@ function reverseTransaction(id) {
     return;
   }
 
-  const rev = addTransaction({ type: 'reversal', delta, memo: `記録 #${tx.id} の取消`, reverses: tx.id });
-  tx.reversedBy = rev.id;
+  const rev = addTransaction({ type: 'reversal', delta, memo: `記録 #${tx.id} の取消`, reverses: tx.uid });
+  tx.reversedBy = rev.uid;
   save();
   renderAll();
   toast('取り消しました');
@@ -648,12 +736,13 @@ function renderHistory() {
       const btn = document.createElement('button');
       btn.className = 'undo';
       btn.textContent = '取消';
-      btn.addEventListener('click', () => reverseTransaction(tx.id));
+      btn.addEventListener('click', () => reverseTransaction(tx.uid));
       item.appendChild(btn);
     } else if (tx.reversedBy) {
+      const revTx = state.transactions.find(t => t.uid === tx.reversedBy);
       const note = document.createElement('div');
       note.style.cssText = 'font-size:11px; color:var(--sub); margin-top:4px;';
-      note.textContent = `取消済み（#${tx.reversedBy}）`;
+      note.textContent = revTx ? `取消済み（#${revTx.id}）` : '取消済み';
       item.appendChild(note);
     }
     box.appendChild(item);
@@ -702,12 +791,10 @@ function importJson(file) {
   const reader = new FileReader();
   reader.onload = () => {
     try {
-      const s = JSON.parse(reader.result);
-      if (!s || !s.counts || !Array.isArray(s.transactions)) throw new Error('形式が違います');
-      if (!confirm('現在のデータをバックアップの内容で置き換えます。よろしいですか？')) return;
-      DENOMS.forEach(d => { if (!Number.isInteger(s.counts[d])) s.counts[d] = 0; });
-      if (!Number.isInteger(s.nextId)) s.nextId = s.transactions.length + 1;
-      if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
+      const s = normalizeState(JSON.parse(reader.result));
+      if (!s) throw new Error('形式が違います');
+      if (!confirm('現在のデータをバックアップの内容で置き換えます。よろしいですか？\n（クラウド同期を利用中の場合、他の端末もこの内容に置き換わります）')) return;
+      s.gen = Date.now();  // 世代を進め、同期先の全端末をこの内容に追従させる
       state = s;
       save();
       renderAll();
@@ -722,7 +809,7 @@ function importJson(file) {
 }
 
 function resetAll() {
-  if (!confirm('すべての残高・履歴を削除して初期状態に戻します。よろしいですか？')) return;
+  if (!confirm('すべての残高・履歴を削除して初期状態に戻します。よろしいですか？\n（クラウド同期を利用中の場合、他の端末のデータも消えます）')) return;
   if (!confirm('本当に削除しますか？（この操作は元に戻せません。必要ならバックアップ保存を先に行ってください）')) return;
   state = emptyState();
   save();
@@ -730,6 +817,232 @@ function resetAll() {
   updateEntryTotal();
   updateAuditView();
   toast('初期化しました');
+}
+
+// ===== クラウド同期（Firebase Realtime Database / REST APIのみ・SDK不使用） =====
+// SETUP.md の手順で Firebase プロジェクトを作成し、データベースURLを下の定数に設定する。
+// 空文字のままなら同期機能は完全に無効（従来どおりこの端末のみに保存）。
+const SYNC_DB_URL = '';
+const SYNC_KEY = 'kinko-sync-v1';
+
+const sync = { storeId: null, status: 'unset', busy: false, pending: false, lastRev: null };
+
+function syncConfigured() { return !!(SYNC_DB_URL && sync.storeId); }
+const storeUrl = suffix => `${SYNC_DB_URL}/stores/${sync.storeId}${suffix}.json`;
+
+// パスコード→ストアID（SHA-256）。DB にはこのIDのパスにだけ読み書きするため、
+// パスコードを知らない人はデータの場所を推測できない。
+async function deriveStoreId(passcode) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('kinko-store:' + passcode));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function loadSyncConfig() {
+  try {
+    const c = JSON.parse(localStorage.getItem(SYNC_KEY));
+    if (c && typeof c.storeId === 'string') sync.storeId = c.storeId;
+  } catch (e) {}
+}
+
+function saveSyncConfig() {
+  if (sync.storeId) localStorage.setItem(SYNC_KEY, JSON.stringify({ storeId: sync.storeId }));
+  else localStorage.removeItem(SYNC_KEY);
+}
+
+const SYNC_STATUS_LABELS = {
+  unset: '同期未設定', syncing: '⇅ 同期中…', ok: '⇅ 同期済み',
+  offline: '⇅ オフライン', error: '⚠ 同期エラー',
+};
+
+function setSyncStatus(st) {
+  sync.status = st;
+  const chip = document.getElementById('syncChip');
+  chip.textContent = SYNC_STATUS_LABELS[st];
+  chip.className = 'sync-chip ' + st;
+  document.getElementById('storageNote').textContent = syncConfigured()
+    ? 'クラウド同期が有効です。記録は同じパスコードを設定した全端末で共有されます。念のため定期的なバックアップ保存もおすすめします。'
+    : 'データはこの端末のブラウザ（localStorage）にのみ保存されます。端末の変更・ブラウザのデータ消去に備えて、定期的にバックアップ保存をおすすめします。';
+}
+
+// 比較用の署名。counts と id は transactions から導出されるため、
+// uid の集合＋取消関係＋世代＋基準額が一致すれば実質同一とみなせる。
+function stateSig(s) {
+  return JSON.stringify({
+    gen: s.gen, baseAmount: s.baseAmount, baseAmountAt: s.baseAmountAt,
+    txs: s.transactions.map(tx => [tx.uid, tx.reversedBy || 0]).sort(),
+  });
+}
+
+// ローカルとリモートの統合。冪等・順序非依存になるよう、
+// 「uid の和集合 → 日時順に並べ直し → id 振り直し → counts 再計算」で構成する。
+// gen（世代番号）が異なる場合は全置換操作（初期化・バックアップ復元）なので新しい方が全取り。
+function mergeStates(local, remote) {
+  if (!remote) return local;
+  if (local.gen !== remote.gen) return local.gen > remote.gen ? local : remote;
+
+  const byUid = {};
+  remote.transactions.concat(local.transactions).forEach(tx => {
+    if (!byUid[tx.uid]) byUid[tx.uid] = tx;
+  });
+  let merged = Object.values(byUid).sort((a, b) =>
+    a.at < b.at ? -1 : a.at > b.at ? 1 : a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0);
+
+  // 2端末がオフライン中に同じ取引を取り消した場合の二重打ち消しを防ぐ（先の取消のみ残す）
+  const seenReversed = new Set();
+  merged = merged.filter(tx => {
+    if (tx.type === 'reversal' && tx.reverses) {
+      if (seenReversed.has(tx.reverses)) return false;
+      seenReversed.add(tx.reverses);
+    }
+    return true;
+  });
+
+  merged.forEach((tx, i) => { tx.id = i + 1; delete tx.reversedBy; });
+  merged.forEach(tx => {
+    if (tx.reverses && byUid[tx.reverses]) byUid[tx.reverses].reversedBy = tx.uid;
+  });
+
+  const counts = {};
+  DENOMS.forEach(d => { counts[d] = merged.reduce((s, tx) => s + (tx.delta[d] || 0), 0); });
+  const baseSrc = remote.baseAmountAt > local.baseAmountAt ? remote : local;
+
+  return {
+    version: 1, gen: local.gen, nextId: merged.length + 1,
+    baseAmount: baseSrc.baseAmount, baseAmountAt: baseSrc.baseAmountAt,
+    counts, transactions: merged,
+  };
+}
+
+let syncDebounce = null;
+function scheduleSync() {
+  if (!syncConfigured()) return;
+  clearTimeout(syncDebounce);
+  syncDebounce = setTimeout(syncNow, 800);
+}
+
+async function syncNow() {
+  if (!syncConfigured()) return;
+  if (sync.busy) { sync.pending = true; return; }
+  sync.busy = true;
+  setSyncStatus('syncing');
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetch(storeUrl(''), { headers: { 'X-Firebase-ETag': 'true' } });
+      if (!res.ok) throw new Error('GET ' + res.status);
+      const etag = res.headers.get('ETag');
+      const node = await res.json();
+      const remote = node && node.data ? normalizeState(node.data) : null;
+      const remoteSig = remote ? stateSig(remote) : null;
+      const localSig = stateSig(state);
+      const localTxCount = state.transactions.length;
+
+      const merged = mergeStates(state, remote);
+      const mergedSig = stateSig(merged);
+      if (merged !== state) {
+        state = merged;
+        saveLocalOnly();
+      }
+      if (mergedSig !== localSig) {
+        renderAll();
+        updateAuditView();
+        if (state.transactions.length > localTxCount) toast('他の端末の記録を取り込みました');
+      }
+
+      if (mergedSig !== remoteSig) {
+        const rev = newUid();
+        const put = await fetch(storeUrl('') + '?print=silent', {
+          method: 'PUT',
+          headers: { 'if-match': etag, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ meta: { rev, at: Date.now() }, data: state }),
+        });
+        if (put.status === 412) continue;  // 他端末と書き込みが競合 → 再取得してマージし直し
+        if (!put.ok) throw new Error('PUT ' + put.status);
+        sync.lastRev = rev;
+      } else {
+        sync.lastRev = node && node.meta ? node.meta.rev : null;
+      }
+      break;
+    }
+    setSyncStatus('ok');
+  } catch (e) {
+    setSyncStatus(navigator.onLine === false ? 'offline' : 'error');
+  } finally {
+    sync.busy = false;
+    if (sync.pending) { sync.pending = false; syncNow(); }
+  }
+}
+
+// 60秒ごとの軽量ポーリング。全データではなく数十バイトの meta だけを見て、
+// 変化があった時のみ本同期する（無料枠の転送量対策）。
+async function pollTick() {
+  if (!syncConfigured() || sync.busy || document.hidden) return;
+  try {
+    const res = await fetch(storeUrl('/meta'));
+    if (!res.ok) return;
+    const meta = await res.json();
+    if (!meta || meta.rev !== sync.lastRev) syncNow();
+  } catch (e) {}
+}
+
+function initSync() {
+  loadSyncConfig();
+  setSyncStatus(syncConfigured() ? 'syncing' : 'unset');
+  if (syncConfigured()) syncNow();
+  window.addEventListener('online', () => syncNow());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNow(); });
+  setInterval(pollTick, 60000);
+}
+
+// ----- 同期設定モーダル -----
+function openSyncDialog() {
+  const connected = syncConfigured();
+  document.getElementById('syncMsg').textContent = '';
+  document.getElementById('syncSetupForm').hidden = connected || !SYNC_DB_URL;
+  document.getElementById('syncConnectedBox').hidden = !connected;
+  document.getElementById('syncNoServerBox').hidden = !!SYNC_DB_URL;
+  document.getElementById('syncOverlay').classList.add('show');
+}
+
+function closeSyncDialog() {
+  document.getElementById('syncOverlay').classList.remove('show');
+}
+
+async function connectSync() {
+  const msg = document.getElementById('syncMsg');
+  const passcode = document.getElementById('syncPasscode').value.trim();
+  if (passcode.length < 4) { msg.textContent = 'パスコードは4文字以上にしてください'; return; }
+  msg.textContent = '接続中…';
+  const storeId = await deriveStoreId(passcode);
+  try {
+    const res = await fetch(`${SYNC_DB_URL}/stores/${storeId}/data.json`);
+    if (!res.ok) throw new Error('GET ' + res.status);
+    const remote = normalizeState(await res.json());
+    if (remote && state.transactions.length > 0 &&
+        !confirm('クラウドに既存の記録があります。この端末の記録と統合しますが、よろしいですか？')) {
+      msg.textContent = '';
+      return;
+    }
+    sync.storeId = storeId;
+    saveSyncConfig();
+    // 初回接続はクラウド側の世代に合流し、和集合マージで統合させる
+    if (remote) { state.gen = remote.gen; saveLocalOnly(); }
+    document.getElementById('syncPasscode').value = '';
+    closeSyncDialog();
+    await syncNow();
+    toast('クラウド同期を開始しました');
+  } catch (e) {
+    msg.textContent = '接続できません。通信環境を確認してください';
+  }
+}
+
+function disconnectSync() {
+  if (!confirm('この端末の同期を解除します。記録は消えません（この端末に残ります）。よろしいですか？')) return;
+  sync.storeId = null;
+  sync.lastRev = null;
+  saveSyncConfig();
+  setSyncStatus('unset');
+  closeSyncDialog();
+  toast('同期を解除しました');
 }
 
 // ===== タブ切替・初期化 =====
@@ -891,12 +1204,21 @@ document.getElementById('jsonImportFile').addEventListener('change', e => {
   e.target.value = '';
 });
 document.getElementById('resetAll').addEventListener('click', resetAll);
+document.getElementById('syncChip').addEventListener('click', openSyncDialog);
+document.getElementById('syncSettings').addEventListener('click', openSyncDialog);
+document.getElementById('syncConnect').addEventListener('click', connectSync);
+document.getElementById('syncDisconnect').addEventListener('click', disconnectSync);
+document.getElementById('syncClose').addEventListener('click', closeSyncDialog);
+document.getElementById('syncOverlay').addEventListener('click', e => {
+  if (e.target.id === 'syncOverlay') closeSyncDialog();
+});
 
 renderAll();
 updateEntryTotal();
 updateAuditView();
 updateClock();
 setInterval(updateClock, 1000);
+initSync();
 </script>
 </body>
 </html>
