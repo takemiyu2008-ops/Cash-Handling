@@ -142,7 +142,7 @@ input[type="password"]{
     <div class="clock" id="clock"></div>
     <button type="button" class="sync-chip unset" id="syncChip">同期未設定</button>
   </div>
-  <div class="total"><small>帳簿残高</small><span id="headerTotal">0</span>円</div>
+  <div class="total"><small>金庫総額</small><span id="headerTotal">0</span>円</div>
 </header>
 
 <nav class="tabs">
@@ -165,9 +165,10 @@ input[type="password"]{
     <h2>基準額との比較</h2>
     <table>
       <tr><td>基準額</td><td id="baseAmountCell"></td></tr>
-      <tr><td>帳簿残高</td><td id="baseBookCell"></td></tr>
+      <tr><td>帳簿残高（金種）</td><td id="baseBookCell"></td></tr>
+      <tr id="damagedRow"><td>損傷金（別枠）</td><td id="damagedCell"></td></tr>
+      <tr class="subtotal"><td>総額</td><td id="baseGrandCell"></td></tr>
       <tr class="total"><td>差額</td><td id="baseDiffCell"></td></tr>
-      <tr id="damagedRow" hidden><td>うち損傷金（前回実査）</td><td id="damagedCell"></td></tr>
     </table>
     <button class="btn secondary" id="baseEdit">基準額を変更</button>
   </div>
@@ -184,14 +185,18 @@ input[type="password"]{
     <label class="field" for="entryType">種別</label>
     <select id="entryType">
       <optgroup label="入金（金庫に入れる）">
-        <option value="sales_in">売上金入金（レジ→金庫）</option>
-        <option value="change_supply">釣銭調達（銀行→金庫）</option>
-        <option value="other_in">その他入金</option>
+        <option value="ar_in">売掛金</option>
+        <option value="nichii_in">ニチイ</option>
+        <option value="gas_in">ガソリン代</option>
+        <option value="owner_in">オーナー持ち出し分</option>
+        <option value="misc_in">その他</option>
       </optgroup>
       <optgroup label="出金（金庫から出す）">
-        <option value="change_out">釣銭払い出し（金庫→レジ）</option>
-        <option value="bank_deposit">銀行預け入れ（金庫→銀行）</option>
-        <option value="other_out">その他出金</option>
+        <option value="ar_out">売掛金</option>
+        <option value="nichii_out">ニチイ</option>
+        <option value="gas_out">ガソリン代</option>
+        <option value="owner_out">オーナー持ち出し分</option>
+        <option value="misc_out">その他</option>
       </optgroup>
     </select>
 
@@ -204,7 +209,7 @@ input[type="password"]{
     </div>
 
     <label class="field" for="entryMemo">メモ（任意）</label>
-    <input type="text" id="entryMemo" placeholder="例：レジ1号機へ釣銭補充">
+    <input type="text" id="entryMemo" placeholder="例：〇〇様 売掛金回収">
 
     <button class="btn" id="entrySubmit">記録する</button>
   </div>
@@ -220,18 +225,21 @@ input[type="password"]{
     </p>
     <div id="auditDenoms"></div>
 
-    <label class="field" for="auditDamaged">うち損傷金（任意・円）</label>
+    <label class="field" for="auditDamaged">損傷金（別枠・円）</label>
     <input type="number" id="auditDamaged" min="0" step="1" inputmode="numeric" placeholder="0"
            style="width:140px; height:38px; text-align:right; font-size:16px;">
     <p class="hint">
-      破れ・汚損したお札や変形硬貨などの合計額。上の金種別枚数には<strong>含めて</strong>数え、
-      ここには参考として記録してください（銀行での交換用のメモになります）。
+      破れ・汚損したお札や変形硬貨などの合計額。上の金種別枚数には<strong>含めず</strong>、
+      別枠で数えてここに金額を入力してください（銀行での交換用のメモになります）。
+      現在の帳簿上の損傷金は <strong id="auditDamagedBook">0円</strong> です。
     </p>
 
     <div class="card" style="margin:14px 0 0; padding:12px; background:#f7f8fa;">
       <table style="font-size:13px;">
-        <tr><td>実査合計</td><td id="auditActualTotal">0円</td></tr>
-        <tr><td>帳簿残高</td><td id="auditBookTotal">0円</td></tr>
+        <tr><td>実査合計（金種）</td><td id="auditActualTotal">0円</td></tr>
+        <tr><td>損傷金</td><td id="auditActualDamaged">0円</td></tr>
+        <tr class="subtotal"><td>総合計</td><td id="auditGrandTotal">0円</td></tr>
+        <tr><td>帳簿残高（総額）</td><td id="auditBookTotal">0円</td></tr>
         <tr class="total"><td>過不足</td><td id="auditDiffTotal">±0円</td></tr>
         <tr><td>基準額との差</td><td id="auditBaseDiff">±0円</td></tr>
       </table>
@@ -240,7 +248,7 @@ input[type="password"]{
     <label class="field" for="auditMemo">メモ（任意）</label>
     <input type="text" id="auditMemo" placeholder="例：閉店後の実査">
 
-    <button class="btn secondary" id="auditPrefill">帳簿の枚数を実査欄にコピー</button>
+    <button class="btn secondary" id="auditPrefill">帳簿の枚数・損傷金を実査欄にコピー</button>
     <button class="btn" id="auditSubmit">照合を確定する</button>
   </div>
 </section>
@@ -312,26 +320,43 @@ const STORAGE_KEY = 'kinko-cash-v1';
 const DEFAULT_BASE_AMOUNT = 500000; // 金庫の基準額（円）
 
 const TYPE_LABELS = {
+  // 現行の入出金種別（入出金タブの選択肢）
+  ar_in:         '売掛金（入金）',
+  nichii_in:     'ニチイ（入金）',
+  gas_in:        'ガソリン代（入金）',
+  owner_in:      'オーナー持ち出し分（入金）',
+  misc_in:       'その他（入金）',
+  ar_out:        '売掛金（出金）',
+  nichii_out:    'ニチイ（出金）',
+  gas_out:       'ガソリン代（出金）',
+  owner_out:     'オーナー持ち出し分（出金）',
+  misc_out:      'その他（出金）',
+  audit:         '実査調整',
+  reversal:      '取消',
+  // 旧種別。新規には選べないが、過去の取引を履歴・CSVに正しく表示するため残す
   sales_in:      '売上金入金',
   change_supply: '釣銭調達',
   other_in:      'その他入金',
   change_out:    '釣銭払い出し',
   bank_deposit:  '銀行預け入れ',
   other_out:     'その他出金',
-  audit:         '実査調整',
-  reversal:      '取消',
 };
-const IN_TYPES = new Set(['sales_in', 'change_supply', 'other_in']);
+const IN_TYPES = new Set([
+  'ar_in', 'nichii_in', 'gas_in', 'owner_in', 'misc_in',
+  'sales_in', 'change_supply', 'other_in', // 旧種別
+]);
 
 // ===== 状態 =====
 // state.counts:  金種→帳簿上の枚数
+// state.damaged: 損傷金（破損札・変形硬貨）の帳簿残高（円）。金種別枚数とは別枠で管理する
 // transactions[].delta: 金種→符号付き枚数（＋が金庫に入る方向）
+// transactions[].damagedDelta: 損傷金の符号付き増減（円）。state.damaged = 全 damagedDelta の総和
 let state = load();
 
 function emptyState() {
   const counts = {};
   DENOMS.forEach(d => counts[d] = 0);
-  return { version: 1, gen: Date.now(), nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, baseAmountAt: 0, counts, transactions: [] };
+  return { version: 1, gen: Date.now(), nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, baseAmountAt: 0, counts, damaged: 0, transactions: [] };
 }
 
 function newUid() {
@@ -352,6 +377,8 @@ function normalizeState(s) {
   if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
   if (!Number.isInteger(s.gen)) s.gen = Date.now();
   if (!Number.isInteger(s.baseAmountAt)) s.baseAmountAt = 0;
+  // RTDB は 0 を保存しないため、損傷金残高は欠落して戻ってくることがある
+  if (!Number.isInteger(s.damaged) || s.damaged < 0) s.damaged = 0;
   s.transactions.forEach(tx => {
     if (!tx.delta || typeof tx.delta !== 'object') tx.delta = {};
     if (typeof tx.memo !== 'string') tx.memo = '';
@@ -496,26 +523,21 @@ function renderBalance() {
   html += `<tr class="total"><td>合計</td><td></td><td>${fmt(billSum + coinSum)}円</td></tr>`;
   tbl.innerHTML = html;
 
-  document.getElementById('headerTotal').textContent = fmt(bookTotal());
+  document.getElementById('headerTotal').textContent = fmt(bookTotal() + state.damaged);
   document.getElementById('firstUseNotice').hidden =
     !(state.transactions.length === 0 && bookTotal() === 0);
 
+  // 金庫の総額 = 金種別の帳簿残高 + 別枠の損傷金
   const book = bookTotal();
-  const diff = book - state.baseAmount;
+  const grand = book + state.damaged;
+  const diff = grand - state.baseAmount;
   document.getElementById('baseAmountCell').textContent = fmt(state.baseAmount) + '円';
   document.getElementById('baseBookCell').textContent = fmt(book) + '円';
+  document.getElementById('damagedCell').textContent = fmt(state.damaged) + '円';
+  document.getElementById('baseGrandCell').textContent = fmt(grand) + '円';
   const diffCell = document.getElementById('baseDiffCell');
   diffCell.textContent = fmtSigned(diff) + '円';
   diffCell.className = diff > 0 ? 'amount-in' : diff < 0 ? 'amount-out' : 'diff-zero';
-
-  const lastAudit = [...state.transactions].reverse().find(t => t.type === 'audit');
-  const dmgRow = document.getElementById('damagedRow');
-  if (lastAudit && lastAudit.damaged) {
-    dmgRow.hidden = false;
-    document.getElementById('damagedCell').textContent = fmt(lastAudit.damaged) + '円';
-  } else {
-    dmgRow.hidden = true;
-  }
 }
 
 function editBaseAmount() {
@@ -578,6 +600,12 @@ function submitEntry() {
 }
 
 // ===== 実査タブ =====
+// 損傷金入力欄を 0 以上の整数として読む（空欄・不正値は 0）
+function readDamagedInput() {
+  const v = parseInt(document.getElementById('auditDamaged').value, 10);
+  return Number.isInteger(v) && v > 0 ? v : 0;
+}
+
 function updateAuditView() {
   const actual = readCounts('audit');
   let actualTotal = 0;
@@ -591,14 +619,19 @@ function updateAuditView() {
     el.textContent = parts.join('　');
     el.className = 'sub ' + (diff > 0 ? 'amount-in' : diff < 0 ? 'amount-out' : '');
   });
-  const book = bookTotal();
-  const diffTotal = actualTotal - book;
+  const actualDamaged = readDamagedInput();
+  const grandTotal = actualTotal + actualDamaged;
+  const book = bookTotal() + state.damaged;
+  const diffTotal = grandTotal - book;
   document.getElementById('auditActualTotal').textContent = fmt(actualTotal) + '円';
+  document.getElementById('auditActualDamaged').textContent = fmt(actualDamaged) + '円';
+  document.getElementById('auditGrandTotal').textContent = fmt(grandTotal) + '円';
+  document.getElementById('auditDamagedBook').textContent = fmt(state.damaged) + '円';
   document.getElementById('auditBookTotal').textContent = fmt(book) + '円';
   const diffEl = document.getElementById('auditDiffTotal');
   diffEl.textContent = fmtSigned(diffTotal) + '円';
   diffEl.className = diffTotal > 0 ? 'amount-in' : diffTotal < 0 ? 'amount-out' : 'diff-zero';
-  const baseDiff = actualTotal - state.baseAmount;
+  const baseDiff = grandTotal - state.baseAmount;
   const baseEl = document.getElementById('auditBaseDiff');
   baseEl.textContent = fmtSigned(baseDiff) + '円';
   baseEl.className = baseDiff > 0 ? 'amount-in' : baseDiff < 0 ? 'amount-out' : 'diff-zero';
@@ -615,6 +648,7 @@ function prefillAudit() {
       document.getElementById(`audit-${d}`).value = n || '';
     }
   });
+  document.getElementById('auditDamaged').value = state.damaged || '';
   updateAuditView();
 }
 
@@ -625,15 +659,14 @@ function submitAudit() {
     const diff = actual[d] - state.counts[d];
     if (diff !== 0) delta[d] = diff;
   });
-  const diffTotal = sumDelta(delta);
   const memo = document.getElementById('auditMemo').value.trim();
 
-  const dmgRaw = parseInt(document.getElementById('auditDamaged').value, 10);
-  const damaged = Number.isInteger(dmgRaw) && dmgRaw > 0 ? dmgRaw : 0;
-  const actualTotal = DENOMS.reduce((s, d) => s + d * actual[d], 0);
-  if (damaged > actualTotal) { toast('損傷金が実査合計を超えています'); return; }
+  // 損傷金は金種別枚数とは別枠。実査値と帳簿値の差を増減として記録する
+  const damagedDelta = readDamagedInput() - state.damaged;
+  const diffTotal = sumDelta(delta) + damagedDelta;
+  const noChange = Object.keys(delta).length === 0 && damagedDelta === 0;
 
-  const msg = Object.keys(delta).length === 0
+  const msg = noChange
     ? '帳簿残高と一致しています。照合記録を残しますか？'
     : `過不足 ${fmtSigned(diffTotal)}円 があります。帳簿を実査値に合わせて調整しますか？`;
   if (!confirm(msg)) return;
@@ -641,31 +674,32 @@ function submitAudit() {
   addTransaction({
     type: 'audit',
     delta,
-    memo: memo || (Object.keys(delta).length === 0 ? '照合一致' : '実査による調整'),
-    damaged,
+    damagedDelta,
+    memo: memo || (noChange ? '照合一致' : '実査による調整'),
   });
 
   clearCounts('audit');
   document.getElementById('auditMemo').value = '';
   document.getElementById('auditDamaged').value = '';
   updateAuditView();
-  toast(Object.keys(delta).length === 0 ? '照合一致を記録しました' : `過不足 ${fmtSigned(diffTotal)}円 を調整しました`);
+  toast(noChange ? '照合一致を記録しました' : `過不足 ${fmtSigned(diffTotal)}円 を調整しました`);
 }
 
 // ===== 取引の追加・取消 =====
-function addTransaction({ type, delta, memo, reverses, damaged }) {
+function addTransaction({ type, delta, memo, reverses, damagedDelta }) {
   DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
+  state.damaged += (damagedDelta || 0);
   const tx = {
     id: state.nextId++,
     uid: newUid(),
     at: new Date().toISOString(),
     type,
     delta,
-    amount: sumDelta(delta),
+    amount: sumDelta(delta) + (damagedDelta || 0),
     memo: memo || '',
   };
   if (reverses) tx.reverses = reverses;
-  if (damaged) tx.damaged = damaged;
+  if (damagedDelta) tx.damagedDelta = damagedDelta;
   state.transactions.push(tx);
   save();
   renderAll();
@@ -684,8 +718,16 @@ function reverseTransaction(uid) {
     toast('取り消すと帳簿の枚数がマイナスになるため取消できません');
     return;
   }
+  const damagedDelta = -(tx.damagedDelta || 0);
+  if (state.damaged + damagedDelta < 0) {
+    toast('取り消すと損傷金がマイナスになるため取消できません');
+    return;
+  }
 
-  const rev = addTransaction({ type: 'reversal', delta, memo: `記録 #${tx.id} の取消`, reverses: tx.uid });
+  const rev = addTransaction({
+    type: 'reversal', delta, damagedDelta,
+    memo: `記録 #${tx.id} の取消`, reverses: tx.uid,
+  });
   tx.reversedBy = rev.uid;
   save();
   renderAll();
@@ -720,7 +762,8 @@ function renderHistory() {
     const amtClass = tx.amount > 0 ? 'amount-in' : tx.amount < 0 ? 'amount-out' : 'diff-zero';
     let detail = DENOMS.filter(d => tx.delta[d])
       .map(d => `${fmt(d)}円 × ${fmtSigned(tx.delta[d])}枚`).join('　') || '（枚数変動なし）';
-    if (tx.damaged) detail += `<br>うち損傷金 ${fmt(tx.damaged)}円`;
+    if (tx.damagedDelta) detail += `<br>損傷金（別枠） ${fmtSigned(tx.damagedDelta)}円`;
+    if (tx.damaged) detail += `<br>うち損傷金 ${fmt(tx.damaged)}円`; // 旧形式（枚数に含めていた頃の参考値）
 
     item.innerHTML =
       `<div class="${tx.reversedBy ? 'reversed' : ''}">` +
@@ -771,11 +814,11 @@ function today() {
 }
 
 function exportCsv() {
-  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金', ...DENOMS.map(d => fmt(d) + '円')];
+  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金増減', ...DENOMS.map(d => fmt(d) + '円')];
   const rows = state.transactions.map(tx => [
     tx.id, fmtDate(tx.at), TYPE_LABELS[tx.type], tx.amount,
     '"' + (tx.memo || '').replace(/"/g, '""') + '"',
-    tx.damaged || 0,
+    tx.damagedDelta || tx.damaged || 0,
     ...DENOMS.map(d => tx.delta[d] || 0),
   ].join(','));
   download(`金庫取引履歴_${today()}.csv`, '﻿' + [header.join(','), ...rows].join('\r\n'), 'text/csv');
@@ -904,12 +947,13 @@ function mergeStates(local, remote) {
 
   const counts = {};
   DENOMS.forEach(d => { counts[d] = merged.reduce((s, tx) => s + (tx.delta[d] || 0), 0); });
+  const damaged = merged.reduce((s, tx) => s + (tx.damagedDelta || 0), 0);
   const baseSrc = remote.baseAmountAt > local.baseAmountAt ? remote : local;
 
   return {
     version: 1, gen: local.gen, nextId: merged.length + 1,
     baseAmount: baseSrc.baseAmount, baseAmountAt: baseSrc.baseAmountAt,
-    counts, transactions: merged,
+    counts, damaged, transactions: merged,
   };
 }
 
@@ -1191,6 +1235,7 @@ buildDenomRows('entryDenoms', 'entry');
 buildDenomRows('auditDenoms', 'audit', true);
 document.getElementById('entryDenoms').addEventListener('input', updateEntryTotal);
 document.getElementById('auditDenoms').addEventListener('input', updateAuditView);
+document.getElementById('auditDamaged').addEventListener('input', updateAuditView);
 document.getElementById('entryType').addEventListener('change', updateEntryTotal);
 document.getElementById('entrySubmit').addEventListener('click', submitEntry);
 document.getElementById('baseEdit').addEventListener('click', editBaseAmount);
