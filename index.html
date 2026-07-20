@@ -257,6 +257,8 @@ input[type="password"]{
 <section class="tab" id="tab-history">
   <div class="card">
     <h2>取引履歴</h2>
+    <label class="field" for="historyFilter">表示する項目</label>
+    <select id="historyFilter"></select>
     <div id="historyList"></div>
   </div>
   <div class="card">
@@ -345,6 +347,21 @@ const IN_TYPES = new Set([
   'ar_in', 'nichii_in', 'gas_in', 'owner_in', 'misc_in',
   'sales_in', 'change_supply', 'other_in', // 旧種別
 ]);
+
+// 履歴タブの絞り込み項目。types: null は全件。
+// 「その他」に旧 other_in/other_out は含めない（旧種別は legacy として別扱い）
+const HISTORY_FILTERS = [
+  { key: 'all',      label: 'すべて',             types: null },
+  { key: 'ar',       label: '売掛金',             types: ['ar_in', 'ar_out'] },
+  { key: 'nichii',   label: 'ニチイ',             types: ['nichii_in', 'nichii_out'] },
+  { key: 'gas',      label: 'ガソリン代',         types: ['gas_in', 'gas_out'] },
+  { key: 'owner',    label: 'オーナー持ち出し分', types: ['owner_in', 'owner_out'] },
+  { key: 'misc',     label: 'その他',             types: ['misc_in', 'misc_out'] },
+  { key: 'audit',    label: '実査調整',           types: ['audit'] },
+  { key: 'reversal', label: '取消',               types: ['reversal'] },
+  { key: 'legacy',   label: '旧種別',
+    types: ['sales_in', 'change_supply', 'other_in', 'change_out', 'bank_deposit', 'other_out'] },
+];
 
 // ===== 状態 =====
 // state.counts:  金種→帳簿上の枚数
@@ -735,15 +752,45 @@ function reverseTransaction(uid) {
 }
 
 // ===== 履歴タブ =====
+// 選択肢を再構築する（同期などによる再描画でも現在の選択を保持する）
+function rebuildHistoryFilter() {
+  const sel = document.getElementById('historyFilter');
+  const prev = sel.value || 'all';
+  const txTypes = new Set(state.transactions.map(tx => tx.type));
+  sel.innerHTML = '';
+  HISTORY_FILTERS.forEach(f => {
+    // 旧種別は該当する取引が1件も無ければ選択肢に出さない
+    if (f.key === 'legacy' && !f.types.some(t => txTypes.has(t))) return;
+    const opt = document.createElement('option');
+    opt.value = f.key;
+    opt.textContent = f.label;
+    sel.appendChild(opt);
+  });
+  sel.value = [...sel.options].some(o => o.value === prev) ? prev : 'all';
+  return HISTORY_FILTERS.find(f => f.key === sel.value);
+}
+
 function renderHistory() {
+  const filter = rebuildHistoryFilter();
   const box = document.getElementById('historyList');
   if (state.transactions.length === 0) {
     box.innerHTML = '<p style="font-size:13px; color:var(--sub);">まだ記録がありません。</p>';
     return;
   }
+  const byUid = new Map(state.transactions.map(tx => [tx.uid, tx]));
+  // 項目を選んだときは、その項目の取引の取消（reversal）も一緒に表示する
+  const matches = tx => !filter.types
+    || filter.types.includes(tx.type)
+    || (tx.type === 'reversal' && tx.reverses
+        && filter.types.includes((byUid.get(tx.reverses) || {}).type));
+  const shown = state.transactions.filter(matches);
+  if (shown.length === 0) {
+    box.innerHTML = '<p style="font-size:13px; color:var(--sub);">該当する記録がありません。</p>';
+    return;
+  }
   box.innerHTML = '';
   let lastDate = '';
-  [...state.transactions].reverse().forEach(tx => {
+  [...shown].reverse().forEach(tx => {
     const dateStr = fmtDay(tx.at);
     if (dateStr !== lastDate) {
       lastDate = dateStr;
@@ -1241,6 +1288,7 @@ document.getElementById('entrySubmit').addEventListener('click', submitEntry);
 document.getElementById('baseEdit').addEventListener('click', editBaseAmount);
 document.getElementById('auditPrefill').addEventListener('click', prefillAudit);
 document.getElementById('auditSubmit').addEventListener('click', submitAudit);
+document.getElementById('historyFilter').addEventListener('change', renderHistory);
 document.getElementById('csvExport').addEventListener('click', exportCsv);
 document.getElementById('jsonExport').addEventListener('click', exportJson);
 document.getElementById('jsonImportBtn').addEventListener('click', () =>
