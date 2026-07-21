@@ -493,7 +493,7 @@ function buildDenomRows(containerId, prefix, withRolls) {
         btn.addEventListener('click', () => {
           const v = Math.max(0, (parseInt(input.value, 10) || 0) + Number(btn.dataset.step));
           input.value = v === 0 ? '' : v;
-          input.dispatchEvent(new Event('input'));
+          input.dispatchEvent(new Event('input', { bubbles: true }));
         });
       });
     }
@@ -528,16 +528,22 @@ function clearCounts(prefix) {
 function renderBalance() {
   const tbl = document.getElementById('balanceTable');
   let billSum = 0, coinSum = 0;
-  let html = '<tr><th>金種</th><th>枚数</th><th>金額</th></tr>';
+  let html = '<tr><th>金種</th><th>枚数</th><th>棒金</th><th>金額</th></tr>';
   DENOMS.forEach(d => {
     const n = state.counts[d];
     const amt = d * n;
     if (BILLS.has(d)) billSum += amt; else coinSum += amt;
-    html += `<tr><td>${fmt(d)}円</td><td>${fmt(n)} 枚</td><td>${fmt(amt)}円</td></tr>`;
+    let roll = '−';
+    if (!BILLS.has(d)) {
+      const rolls = Math.floor(n / ROLL_SIZE);
+      const loose = n % ROLL_SIZE;
+      roll = loose > 0 ? `${fmt(rolls)}本 + ${fmt(loose)}枚` : `${fmt(rolls)}本`;
+    }
+    html += `<tr><td>${fmt(d)}円</td><td>${fmt(n)} 枚</td><td>${roll}</td><td>${fmt(amt)}円</td></tr>`;
   });
-  html += `<tr class="subtotal"><td>紙幣 計</td><td></td><td>${fmt(billSum)}円</td></tr>`;
-  html += `<tr class="subtotal"><td>硬貨 計</td><td></td><td>${fmt(coinSum)}円</td></tr>`;
-  html += `<tr class="total"><td>合計</td><td></td><td>${fmt(billSum + coinSum)}円</td></tr>`;
+  html += `<tr class="subtotal"><td>紙幣 計</td><td></td><td></td><td>${fmt(billSum)}円</td></tr>`;
+  html += `<tr class="subtotal"><td>硬貨 計</td><td></td><td></td><td>${fmt(coinSum)}円</td></tr>`;
+  html += `<tr class="total"><td>合計</td><td></td><td></td><td>${fmt(billSum + coinSum)}円</td></tr>`;
   tbl.innerHTML = html;
 
   document.getElementById('headerTotal').textContent = fmt(bookTotal() + state.damaged);
