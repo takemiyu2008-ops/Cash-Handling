@@ -170,6 +170,9 @@ input[type="password"]{
       <tr class="subtotal"><td>総額</td><td id="baseGrandCell"></td></tr>
       <tr class="total"><td>差額</td><td id="baseDiffCell"></td></tr>
     </table>
+    <p class="hint">
+      このほかに預り消費税（別枠・総額に含まず）が <strong id="taxBalanceCell">0円</strong> あります。
+    </p>
     <button class="btn secondary" id="baseEdit">基準額を変更</button>
   </div>
   <div class="card">
@@ -189,6 +192,7 @@ input[type="password"]{
         <option value="nichii_in">ニチイ</option>
         <option value="gas_in">ガソリン代</option>
         <option value="owner_in">オーナー持ち出し分</option>
+        <option value="tax_in">消費税</option>
         <option value="misc_in">その他</option>
       </optgroup>
       <optgroup label="出金（金庫から出す）">
@@ -196,12 +200,26 @@ input[type="password"]{
         <option value="nichii_out">ニチイ</option>
         <option value="gas_out">ガソリン代</option>
         <option value="owner_out">オーナー持ち出し分</option>
+        <option value="tax_out">消費税</option>
         <option value="misc_out">その他</option>
       </optgroup>
     </select>
 
-    <label class="field">金種別の枚数</label>
-    <div id="entryDenoms"></div>
+    <div id="entryDenomsWrap">
+      <label class="field">金種別の枚数</label>
+      <div id="entryDenoms"></div>
+    </div>
+
+    <div id="entryTaxWrap" hidden>
+      <label class="field" for="entryTaxAmount">金額（円）</label>
+      <input type="number" id="entryTaxAmount" min="0" step="1" inputmode="numeric" placeholder="0"
+             style="width:140px; height:38px; text-align:right; font-size:16px;">
+      <p class="hint">
+        消費税は国に納める預り金のため、金種別の帳簿残高（残高タブ）や金庫総額には<strong>含めず</strong>、
+        別枠の消費税残高だけが増減します。
+        現在の帳簿上の消費税は <strong id="entryTaxBook">0円</strong> です。
+      </p>
+    </div>
 
     <div class="entry-total">
       <span>合計</span>
@@ -232,6 +250,14 @@ input[type="password"]{
       破れ・汚損したお札や変形硬貨などの合計額。上の金種別枚数には<strong>含めず</strong>、
       別枠で数えてここに金額を入力してください（銀行での交換用のメモになります）。
       現在の帳簿上の損傷金は <strong id="auditDamagedBook">0円</strong> です。
+    </p>
+
+    <label class="field">消費税（別枠）</label>
+    <p class="hint">
+      スタッフから徴収した消費税の預り分。国に納めるお金のため、金種別枚数や
+      下の総合計・基準額との比較には<strong>含めません</strong>。
+      現在の帳簿上の消費税は <strong id="auditTaxBook">0円</strong> です。
+      増減は「入出金」タブの種別「消費税」で記録してください。
     </p>
 
     <div class="card" style="margin:14px 0 0; padding:12px; background:#f7f8fa;">
@@ -327,11 +353,13 @@ const TYPE_LABELS = {
   nichii_in:     'ニチイ（入金）',
   gas_in:        'ガソリン代（入金）',
   owner_in:      'オーナー持ち出し分（入金）',
+  tax_in:        '消費税（入金）',
   misc_in:       'その他（入金）',
   ar_out:        '売掛金（出金）',
   nichii_out:    'ニチイ（出金）',
   gas_out:       'ガソリン代（出金）',
   owner_out:     'オーナー持ち出し分（出金）',
+  tax_out:       '消費税（出金）',
   misc_out:      'その他（出金）',
   audit:         '実査調整',
   reversal:      '取消',
@@ -344,9 +372,11 @@ const TYPE_LABELS = {
   other_out:     'その他出金',
 };
 const IN_TYPES = new Set([
-  'ar_in', 'nichii_in', 'gas_in', 'owner_in', 'misc_in',
+  'ar_in', 'nichii_in', 'gas_in', 'owner_in', 'tax_in', 'misc_in',
   'sales_in', 'change_supply', 'other_in', // 旧種別
 ]);
+// 金種別枚数ではなく金額のみで記録し、別枠の消費税残高（state.tax）だけを増減させる種別
+const TAX_TYPES = new Set(['tax_in', 'tax_out']);
 
 // 履歴タブの絞り込み項目。types: null は全件。
 // 「その他」に旧 other_in/other_out は含めない（旧種別は legacy として別扱い）
@@ -356,6 +386,7 @@ const HISTORY_FILTERS = [
   { key: 'nichii',   label: 'ニチイ',             types: ['nichii_in', 'nichii_out'] },
   { key: 'gas',      label: 'ガソリン代',         types: ['gas_in', 'gas_out'] },
   { key: 'owner',    label: 'オーナー持ち出し分', types: ['owner_in', 'owner_out'] },
+  { key: 'tax',      label: '消費税',             types: ['tax_in', 'tax_out'] },
   { key: 'misc',     label: 'その他',             types: ['misc_in', 'misc_out'] },
   { key: 'audit',    label: '実査調整',           types: ['audit'] },
   { key: 'reversal', label: '取消',               types: ['reversal'] },
@@ -368,12 +399,14 @@ const HISTORY_FILTERS = [
 // state.damaged: 損傷金（破損札・変形硬貨）の帳簿残高（円）。金種別枚数とは別枠で管理する
 // transactions[].delta: 金種→符号付き枚数（＋が金庫に入る方向）
 // transactions[].damagedDelta: 損傷金の符号付き増減（円）。state.damaged = 全 damagedDelta の総和
+// state.tax:     預り消費税の帳簿残高（円）。国に納める預り金のため金庫総額には含めない別枠
+// transactions[].taxDelta: 消費税の符号付き増減（円）。state.tax = 全 taxDelta の総和
 let state = load();
 
 function emptyState() {
   const counts = {};
   DENOMS.forEach(d => counts[d] = 0);
-  return { version: 1, gen: Date.now(), nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, baseAmountAt: 0, counts, damaged: 0, transactions: [] };
+  return { version: 1, gen: Date.now(), nextId: 1, baseAmount: DEFAULT_BASE_AMOUNT, baseAmountAt: 0, counts, damaged: 0, tax: 0, transactions: [] };
 }
 
 function newUid() {
@@ -394,8 +427,9 @@ function normalizeState(s) {
   if (!Number.isInteger(s.baseAmount) || s.baseAmount < 0) s.baseAmount = DEFAULT_BASE_AMOUNT;
   if (!Number.isInteger(s.gen)) s.gen = Date.now();
   if (!Number.isInteger(s.baseAmountAt)) s.baseAmountAt = 0;
-  // RTDB は 0 を保存しないため、損傷金残高は欠落して戻ってくることがある
+  // RTDB は 0 を保存しないため、損傷金・消費税の残高は欠落して戻ってくることがある
   if (!Number.isInteger(s.damaged) || s.damaged < 0) s.damaged = 0;
+  if (!Number.isInteger(s.tax) || s.tax < 0) s.tax = 0;
   s.transactions.forEach(tx => {
     if (!tx.delta || typeof tx.delta !== 'object') tx.delta = {};
     if (typeof tx.memo !== 'string') tx.memo = '';
@@ -557,6 +591,7 @@ function renderBalance() {
   document.getElementById('baseAmountCell').textContent = fmt(state.baseAmount) + '円';
   document.getElementById('baseBookCell').textContent = fmt(book) + '円';
   document.getElementById('damagedCell').textContent = fmt(state.damaged) + '円';
+  document.getElementById('taxBalanceCell').textContent = fmt(state.tax) + '円';
   document.getElementById('baseGrandCell').textContent = fmt(grand) + '円';
   const diffCell = document.getElementById('baseDiffCell');
   diffCell.textContent = fmtSigned(diff) + '円';
@@ -577,15 +612,31 @@ function editBaseAmount() {
 }
 
 // ===== 入出金タブ =====
+// 消費税の金額入力欄を 0 以上の整数として読む（空欄・不正値は 0）
+function readTaxAmountInput() {
+  const v = parseInt(document.getElementById('entryTaxAmount').value, 10);
+  return Number.isInteger(v) && v > 0 ? v : 0;
+}
+
 function updateEntryTotal() {
-  const counts = readCounts('entry');
+  const type = document.getElementById('entryType').value;
+  const isTax = TAX_TYPES.has(type);
+  // 消費税は金種別枚数を動かさないため、枚数入力の代わりに金額のみの入力欄に切り替える
+  document.getElementById('entryDenomsWrap').hidden = isTax;
+  document.getElementById('entryTaxWrap').hidden = !isTax;
   let total = 0;
-  DENOMS.forEach(d => {
-    const amt = d * counts[d];
-    total += amt;
-    document.getElementById(`entry-sub-${d}`).textContent = amt > 0 ? fmt(amt) + '円' : '';
-  });
-  const isIn = IN_TYPES.has(document.getElementById('entryType').value);
+  if (isTax) {
+    total = readTaxAmountInput();
+    document.getElementById('entryTaxBook').textContent = fmt(state.tax) + '円';
+  } else {
+    const counts = readCounts('entry');
+    DENOMS.forEach(d => {
+      const amt = d * counts[d];
+      total += amt;
+      document.getElementById(`entry-sub-${d}`).textContent = amt > 0 ? fmt(amt) + '円' : '';
+    });
+  }
+  const isIn = IN_TYPES.has(type);
   const el = document.getElementById('entryTotal');
   el.textContent = (total > 0 ? (isIn ? '+' : '−') : '') + fmt(total) + '円';
   el.className = 'amount ' + (total > 0 ? (isIn ? 'amount-in' : 'amount-out') : '');
@@ -593,8 +644,26 @@ function updateEntryTotal() {
 
 function submitEntry() {
   const type = document.getElementById('entryType').value;
-  const counts = readCounts('entry');
   const isIn = IN_TYPES.has(type);
+  const memo = document.getElementById('entryMemo').value.trim();
+
+  // 消費税：金額のみ・別枠残高（state.tax）の増減として記録し、金種別枚数は動かさない
+  if (TAX_TYPES.has(type)) {
+    const v = readTaxAmountInput();
+    if (v === 0) { toast('金額を入力してください'); return; }
+    if (!isIn && v > state.tax) {
+      toast(`消費税の残高（${fmt(state.tax)}円）を超えています`);
+      return;
+    }
+    addTransaction({ type, delta: {}, taxDelta: isIn ? v : -v, memo });
+    document.getElementById('entryTaxAmount').value = '';
+    document.getElementById('entryMemo').value = '';
+    updateEntryTotal();
+    toast(`${TYPE_LABELS[type]} ${fmt(v)}円 を記録しました`);
+    return;
+  }
+
+  const counts = readCounts('entry');
   const total = DENOMS.reduce((s, d) => s + d * counts[d], 0);
 
   if (total === 0) { toast('枚数を入力してください'); return; }
@@ -610,11 +679,7 @@ function submitEntry() {
   const delta = {};
   DENOMS.forEach(d => { if (counts[d]) delta[d] = isIn ? counts[d] : -counts[d]; });
 
-  addTransaction({
-    type,
-    delta,
-    memo: document.getElementById('entryMemo').value.trim(),
-  });
+  addTransaction({ type, delta, memo });
 
   clearCounts('entry');
   document.getElementById('entryMemo').value = '';
@@ -650,6 +715,7 @@ function updateAuditView() {
   document.getElementById('auditActualDamaged').textContent = fmt(actualDamaged) + '円';
   document.getElementById('auditGrandTotal').textContent = fmt(grandTotal) + '円';
   document.getElementById('auditDamagedBook').textContent = fmt(state.damaged) + '円';
+  document.getElementById('auditTaxBook').textContent = fmt(state.tax) + '円';
   document.getElementById('auditBookTotal').textContent = fmt(book) + '円';
   const diffEl = document.getElementById('auditDiffTotal');
   diffEl.textContent = fmtSigned(diffTotal) + '円';
@@ -709,20 +775,22 @@ function submitAudit() {
 }
 
 // ===== 取引の追加・取消 =====
-function addTransaction({ type, delta, memo, reverses, damagedDelta }) {
+function addTransaction({ type, delta, memo, reverses, damagedDelta, taxDelta }) {
   DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
   state.damaged += (damagedDelta || 0);
+  state.tax += (taxDelta || 0);
   const tx = {
     id: state.nextId++,
     uid: newUid(),
     at: new Date().toISOString(),
     type,
     delta,
-    amount: sumDelta(delta) + (damagedDelta || 0),
+    amount: sumDelta(delta) + (damagedDelta || 0) + (taxDelta || 0),
     memo: memo || '',
   };
   if (reverses) tx.reverses = reverses;
   if (damagedDelta) tx.damagedDelta = damagedDelta;
+  if (taxDelta) tx.taxDelta = taxDelta;
   state.transactions.push(tx);
   save();
   renderAll();
@@ -746,9 +814,14 @@ function reverseTransaction(uid) {
     toast('取り消すと損傷金がマイナスになるため取消できません');
     return;
   }
+  const taxDelta = -(tx.taxDelta || 0);
+  if (state.tax + taxDelta < 0) {
+    toast('取り消すと消費税がマイナスになるため取消できません');
+    return;
+  }
 
   const rev = addTransaction({
-    type: 'reversal', delta, damagedDelta,
+    type: 'reversal', delta, damagedDelta, taxDelta,
     memo: `記録 #${tx.id} の取消`, reverses: tx.uid,
   });
   tx.reversedBy = rev.uid;
@@ -816,6 +889,7 @@ function renderHistory() {
     let detail = DENOMS.filter(d => tx.delta[d])
       .map(d => `${fmt(d)}円 × ${fmtSigned(tx.delta[d])}枚`).join('　') || '（枚数変動なし）';
     if (tx.damagedDelta) detail += `<br>損傷金（別枠） ${fmtSigned(tx.damagedDelta)}円`;
+    if (tx.taxDelta) detail += `<br>消費税（別枠） ${fmtSigned(tx.taxDelta)}円`;
     if (tx.damaged) detail += `<br>うち損傷金 ${fmt(tx.damaged)}円`; // 旧形式（枚数に含めていた頃の参考値）
 
     item.innerHTML =
@@ -867,11 +941,12 @@ function today() {
 }
 
 function exportCsv() {
-  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金増減', ...DENOMS.map(d => fmt(d) + '円')];
+  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金増減', '消費税増減', ...DENOMS.map(d => fmt(d) + '円')];
   const rows = state.transactions.map(tx => [
     tx.id, fmtDate(tx.at), TYPE_LABELS[tx.type], tx.amount,
     '"' + (tx.memo || '').replace(/"/g, '""') + '"',
     tx.damagedDelta || tx.damaged || 0,
+    tx.taxDelta || 0,
     ...DENOMS.map(d => tx.delta[d] || 0),
   ].join(','));
   download(`金庫取引履歴_${today()}.csv`, '﻿' + [header.join(','), ...rows].join('\r\n'), 'text/csv');
@@ -1001,12 +1076,13 @@ function mergeStates(local, remote) {
   const counts = {};
   DENOMS.forEach(d => { counts[d] = merged.reduce((s, tx) => s + (tx.delta[d] || 0), 0); });
   const damaged = merged.reduce((s, tx) => s + (tx.damagedDelta || 0), 0);
+  const tax = merged.reduce((s, tx) => s + (tx.taxDelta || 0), 0);
   const baseSrc = remote.baseAmountAt > local.baseAmountAt ? remote : local;
 
   return {
     version: 1, gen: local.gen, nextId: merged.length + 1,
     baseAmount: baseSrc.baseAmount, baseAmountAt: baseSrc.baseAmountAt,
-    counts, damaged, transactions: merged,
+    counts, damaged, tax, transactions: merged,
   };
 }
 
@@ -1147,6 +1223,7 @@ function disconnectSync() {
 function renderAll() {
   renderBalance();
   renderHistory();
+  updateEntryTotal(); // 入出金タブの消費税残高表示（entryTaxBook）を同期などの更新にも追従させる
 }
 
 const TAB_ORDER = Array.from(document.querySelectorAll('nav.tabs button')).map(b => b.dataset.tab);
@@ -1290,6 +1367,7 @@ document.getElementById('entryDenoms').addEventListener('input', updateEntryTota
 document.getElementById('auditDenoms').addEventListener('input', updateAuditView);
 document.getElementById('auditDamaged').addEventListener('input', updateAuditView);
 document.getElementById('entryType').addEventListener('change', updateEntryTotal);
+document.getElementById('entryTaxAmount').addEventListener('input', updateEntryTotal);
 document.getElementById('entrySubmit').addEventListener('click', submitEntry);
 document.getElementById('baseEdit').addEventListener('click', editBaseAmount);
 document.getElementById('auditPrefill').addEventListener('click', prefillAudit);

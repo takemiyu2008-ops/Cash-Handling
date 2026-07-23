@@ -18,11 +18,11 @@ GitHub Pages（https://takemiyu2008-ops.github.io/Cash-Handling/ ）で公開し
 
 ## アーキテクチャ
 
-- 状態は `state = { version, gen, nextId, baseAmount, baseAmountAt, counts, damaged, transactions }` の1オブジェクト。localStorage キーは `kinko-cash-v1`
+- 状態は `state = { version, gen, nextId, baseAmount, baseAmountAt, counts, damaged, tax, transactions }` の1オブジェクト。localStorage キーは `kinko-cash-v1`
 - `baseAmount` は金庫の基準額（デフォルト500,000円、残高タブから変更可）。残高・実査の両タブで基準額との差額を表示する
 - `counts` は金種→帳簿上の枚数。`transactions[].delta` は金種→**符号付き枚数**（＋が金庫に入る方向）で、残高は取引の適用結果として更新される
 - **金庫の総額 = `bookTotal()`（金種別合計）+ `state.damaged`（損傷金）**。ヘッダーの「金庫総額」・残高タブの「総額」・基準額との比較はすべてこの総額で行う
-- 取引種別は `TYPE_LABELS` に定義。入出金タブで選べるのは入金・出金それぞれ「売掛金 / ニチイ / ガソリン代 / オーナー持ち出し分 / その他」の5項目（`ar_*`・`nichii_*`・`gas_*`・`owner_*`・`misc_*` の `_in` / `_out`）＋システム生成の `audit`・`reversal`。旧種別（`sales_in`・`change_supply`・`other_in`・`change_out`・`bank_deposit`・`other_out`）は**過去の取引を履歴・CSVに正しく表示するためだけに残してある**（新規には選べない）。新「その他」に旧 `other_in`/`other_out` を再利用しないのはこのため（過去取引のラベルが書き換わってしまう）。入金/出金の符号とバッジは `IN_TYPES` から導出するので、旧種別も同 Set に含めておくこと
+- 取引種別は `TYPE_LABELS` に定義。入出金タブで選べるのは入金・出金それぞれ「売掛金 / ニチイ / ガソリン代 / オーナー持ち出し分 / 消費税 / その他」の6項目（`ar_*`・`nichii_*`・`gas_*`・`owner_*`・`tax_*`・`misc_*` の `_in` / `_out`。ただし `tax_*` は金額のみ入力の別枠扱い＝後述）＋システム生成の `audit`・`reversal`。旧種別（`sales_in`・`change_supply`・`other_in`・`change_out`・`bank_deposit`・`other_out`）は**過去の取引を履歴・CSVに正しく表示するためだけに残してある**（新規には選べない）。新「その他」に旧 `other_in`/`other_out` を再利用しないのはこのため（過去取引のラベルが書き換わってしまう）。入金/出金の符号とバッジは `IN_TYPES` から導出するので、旧種別も同 Set に含めておくこと
 - 取引の削除はしない方針。誤記録は「取消」＝逆方向の取引（`reversal`）を追加して打ち消す（監査証跡を残すため）
 - 実査は実枚数を入力→帳簿との差異（過不足）を取引 `audit` として記録し、帳簿を実査値に合わせる
 - 実査の硬貨は棒金（`ROLL_SIZE`=50枚/本）＋バラ枚数の2入力。`readCounts` が `{prefix}-roll-{金種}` の存在を見て自動合算する
@@ -30,6 +30,9 @@ GitHub Pages（https://takemiyu2008-ops.github.io/Cash-Handling/ ）で公開し
   - `state.damaged` が損傷金の帳簿残高（円）、`tx.damagedDelta` がその取引による符号付き増減。**`state.damaged` = 全 `damagedDelta` の総和**という不変条件を `counts` と同じ形で持たせ、`mergeStates` が同じやり方で再計算できるようにしてある
   - 実査は「入力値 − `state.damaged`」を `damagedDelta` として記録する。取消（`reversal`）は `-tx.damagedDelta` を持つ
   - 旧形式の `tx.damaged`（金種別枚数に含めて数えていた頃の参考値）は履歴・CSVの表示互換のためだけに読む。遡って解釈し直すと当時の帳簿が壊れるため移行はしない
+- 「消費税」（スタッフから徴収する国への預り金）も金種別枚数とは**別枠**で管理する。損傷金との違いは2点: (1) **金庫総額に含めない**（国に納めるお金のため、ヘッダー・残高タブ・基準額比較・実査の照合計算のすべてから除外し、実査・残高タブに参考表示するだけ）、(2) 増減は実査ではなく**入出金タブの種別 `tax_in`/`tax_out`** で記録する（選ぶと金種別入力が金額のみの入力欄 `entryTaxAmount` に切り替わる。`TAX_TYPES` で判定）
+  - `state.tax` が消費税の帳簿残高（円）、`tx.taxDelta` が符号付き増減。**`state.tax` = 全 `taxDelta` の総和**の不変条件・`mergeStates` 再計算・`normalizeState` の0落ち補完・取消時の `-tx.taxDelta` は損傷金とすべて同型。取引の `delta` は空 `{}` で金種別枚数は動かさない
+  - 出金（`tax_out`）は `state.tax` を超えられない（バリデーションあり）
 - 出金は金種ごとに帳簿枚数を超えられない（バリデーションあり）
 - CSV書き出し（UTF-8 BOM付き）、JSONバックアップ／復元機能あり
 
