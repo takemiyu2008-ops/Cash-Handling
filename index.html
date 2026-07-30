@@ -75,6 +75,7 @@ label.field{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px;}
   background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; margin-top:14px;
 }
 .btn:active{opacity:.85;}
+[hidden]{display:none !important;} /* .btn 等の display 指定が hidden 属性に勝たないように */
 .btn.secondary{background:#eef1f5; color:var(--ink); font-weight:500; font-size:14px; padding:11px;}
 .btn.danger{background:#fdeeee; color:var(--out);}
 .amount-in{color:var(--in);}
@@ -241,6 +242,15 @@ input[type="password"]{
       金庫内の実際の枚数を入力してください。硬貨は棒金（50枚巻き）の本数とバラの枚数で
       入力できます。帳簿残高との差異（過不足）を確認し、確定すると帳簿が実査値に合わせて調整されます。
     </p>
+
+    <div class="notice" id="auditEditBanner" hidden>
+      <strong>前回の実査を修正しています</strong><br>
+      <span id="auditEditBannerInfo"></span><br>
+      あのとき数えた正しい枚数・損傷金に直して、下の「修正を確定する」を押してください。
+      元の実査は「取消」として履歴に残ります。<br>
+      <button type="button" class="btn secondary" id="auditEditCancel" style="margin-top:10px;">修正をやめる</button>
+    </div>
+
     <div id="auditDenoms"></div>
 
     <label class="field" for="auditDamaged">損傷金（別枠・円）</label>
@@ -276,6 +286,10 @@ input[type="password"]{
 
     <button class="btn secondary" id="auditPrefill">帳簿の枚数・損傷金を実査欄にコピー</button>
     <button class="btn" id="auditSubmit">照合を確定する</button>
+    <div id="auditEditStartWrap" hidden>
+      <button class="btn secondary" id="auditEditStart">前回の実査を修正する</button>
+      <p class="hint" id="auditEditStartInfo"></p>
+    </div>
   </div>
 </section>
 
@@ -695,11 +709,15 @@ function readDamagedInput() {
 }
 
 function updateAuditView() {
+  // 修正モード中の過不足は「現在の帳簿」ではなく「元の実査時点の帳簿」を基準にする
+  const snap = auditEdit ? getAuditEditSnapshot() : null;
+  const baseCounts = snap ? snap.baseCounts : state.counts;
+  const baseDamaged = snap ? snap.baseDamaged : state.damaged;
   const actual = readCounts('audit');
   let actualTotal = 0;
   DENOMS.forEach(d => {
     actualTotal += d * actual[d];
-    const diff = actual[d] - state.counts[d];
+    const diff = actual[d] - baseCounts[d];
     const el = document.getElementById(`audit-sub-${d}`);
     const parts = [];
     if (document.getElementById(`audit-roll-${d}`) && actual[d] > 0) parts.push(`計${fmt(actual[d])}枚`);
@@ -709,12 +727,12 @@ function updateAuditView() {
   });
   const actualDamaged = readDamagedInput();
   const grandTotal = actualTotal + actualDamaged;
-  const book = bookTotal() + state.damaged;
+  const book = DENOMS.reduce((s, d) => s + d * baseCounts[d], 0) + baseDamaged;
   const diffTotal = grandTotal - book;
   document.getElementById('auditActualTotal').textContent = fmt(actualTotal) + '円';
   document.getElementById('auditActualDamaged').textContent = fmt(actualDamaged) + '円';
   document.getElementById('auditGrandTotal').textContent = fmt(grandTotal) + '円';
-  document.getElementById('auditDamagedBook').textContent = fmt(state.damaged) + '円';
+  document.getElementById('auditDamagedBook').textContent = fmt(baseDamaged) + '円';
   document.getElementById('auditTaxBook').textContent = fmt(state.tax) + '円';
   document.getElementById('auditBookTotal').textContent = fmt(book) + '円';
   const diffEl = document.getElementById('auditDiffTotal');
@@ -726,9 +744,10 @@ function updateAuditView() {
   baseEl.className = baseDiff > 0 ? 'amount-in' : baseDiff < 0 ? 'amount-out' : 'diff-zero';
 }
 
-function prefillAudit() {
+// 実査タブの入力欄に枚数・損傷金をセットする（硬貨は棒金＋バラに分解）
+function fillAuditInputs(counts, damagedYen) {
   DENOMS.forEach(d => {
-    const n = state.counts[d];
+    const n = counts[d];
     const rollEl = document.getElementById(`audit-roll-${d}`);
     if (rollEl) {
       rollEl.value = Math.floor(n / ROLL_SIZE) || '';
@@ -737,11 +756,16 @@ function prefillAudit() {
       document.getElementById(`audit-${d}`).value = n || '';
     }
   });
-  document.getElementById('auditDamaged').value = state.damaged || '';
+  document.getElementById('auditDamaged').value = damagedYen || '';
   updateAuditView();
 }
 
+function prefillAudit() {
+  fillAuditInputs(state.counts, state.damaged);
+}
+
 function submitAudit() {
+  if (auditEdit) { submitAuditEdit(); return; }
   const actual = readCounts('audit');
   const delta = {};
   DENOMS.forEach(d => {
@@ -767,28 +791,184 @@ function submitAudit() {
     memo: memo || (noChange ? '照合一致' : '実査による調整'),
   });
 
-  clearCounts('audit');
-  document.getElementById('auditMemo').value = '';
-  document.getElementById('auditDamaged').value = '';
+  clearAuditInputs();
   updateAuditView();
   toast(noChange ? '照合一致を記録しました' : `過不足 ${fmtSigned(diffTotal)}円 を調整しました`);
 }
 
+// ===== 実査の修正 =====
+// 直近の実査を「取消（reversal）＋新しい実査」の2取引で修正する。
+// 修正モードの状態。null なら通常モード。対象は uid で持つ（同期マージで id は振り直されるため）
+let auditEdit = null;
+
+function findLastAudit() {
+  for (let i = state.transactions.length - 1; i >= 0; i--) {
+    if (state.transactions[i].type === 'audit') return state.transactions[i];
+  }
+  return null;
+}
+
+// 「counts = 全取引 delta の総和」の不変条件から、その実査で数えた実枚数を導出する。
+//   actual = 現在の counts − Σ(実査より後の取引の delta)
+//   baseCounts = actual − 実査の delta（= 実査時点の帳簿。修正モード中の過不足の基準）
+// 損傷金も同型。導出値が負になる場合（マージ等でつじつまが合わない）は null。
+function buildAuditSnapshot(tx) {
+  const idx = state.transactions.indexOf(tx);
+  if (idx < 0) return null;
+  const actual = {};
+  DENOMS.forEach(d => { actual[d] = state.counts[d]; });
+  let damaged = state.damaged;
+  for (let i = idx + 1; i < state.transactions.length; i++) {
+    const t = state.transactions[i];
+    DENOMS.forEach(d => { actual[d] -= (t.delta[d] || 0); });
+    damaged -= (t.damagedDelta || 0);
+  }
+  const baseCounts = {};
+  DENOMS.forEach(d => { baseCounts[d] = actual[d] - (tx.delta[d] || 0); });
+  const baseDamaged = damaged - (tx.damagedDelta || 0);
+  if (DENOMS.some(d => actual[d] < 0 || baseCounts[d] < 0) || damaged < 0 || baseDamaged < 0) return null;
+  return { tx, actual, damaged, baseCounts, baseDamaged };
+}
+
+// 修正モードが今も有効ならスナップショットを返す（対象が最後の実査のまま・未取消であること）
+function getAuditEditSnapshot() {
+  if (!auditEdit) return null;
+  const last = findLastAudit();
+  if (!last || last.uid !== auditEdit.uid || last.reversedBy) return null;
+  return buildAuditSnapshot(last);
+}
+
+function clearAuditInputs() {
+  clearCounts('audit');
+  document.getElementById('auditMemo').value = '';
+  document.getElementById('auditDamaged').value = '';
+}
+
+function startAuditEdit() {
+  const last = findLastAudit();
+  if (!last || last.reversedBy) { toast('修正できる実査がありません'); return; }
+  const snap = buildAuditSnapshot(last);
+  if (!snap) { toast('記録の状態が変わったため、この実査は修正できません'); return; }
+  const cur = readCounts('audit');
+  if ((DENOMS.some(d => cur[d] > 0) || readDamagedInput() > 0) &&
+      !confirm('入力中の枚数を消して、前回の実査の内容を読み込みます。よろしいですか？')) return;
+  auditEdit = { uid: last.uid };
+  fillAuditInputs(snap.actual, snap.damaged);
+  const m = last.memo;
+  document.getElementById('auditMemo').value =
+    (m && m !== '照合一致' && m !== '実査による調整') ? m : '';
+  renderAuditEditUI();
+  updateAuditView();
+}
+
+function cancelAuditEdit() {
+  auditEdit = null;
+  clearAuditInputs();
+  renderAuditEditUI();
+  updateAuditView();
+  toast('修正をやめました');
+}
+
+// 修正モード関連のUIを state から作り直す（renderAll から呼ばれる）。
+// 同期で対象の実査が取り消された・より新しい実査が入った場合の自動解除もここで行う。
+function renderAuditEditUI() {
+  if (auditEdit && !getAuditEditSnapshot()) {
+    auditEdit = null;
+    clearAuditInputs();
+    updateAuditView();
+    toast('他の端末で実査が更新されたため、修正を中止しました');
+  }
+  const editing = !!auditEdit;
+  const last = findLastAudit();
+  const canEdit = !editing && last && !last.reversedBy;
+  document.getElementById('auditEditStartWrap').hidden = !canEdit;
+  if (canEdit) {
+    document.getElementById('auditEditStartInfo').textContent =
+      `前回の実査：#${last.id}　${fmtDate(last.at)}　過不足 ${fmtSigned(last.amount)}円`;
+  }
+  document.getElementById('auditEditBanner').hidden = !editing;
+  if (editing) {
+    const tx = state.transactions.find(t => t.uid === auditEdit.uid);
+    document.getElementById('auditEditBannerInfo').textContent =
+      `対象：#${tx.id}　${fmtDate(tx.at)}　記録した過不足 ${fmtSigned(tx.amount)}円`;
+  }
+  document.getElementById('auditSubmit').textContent = editing ? '修正を確定する' : '照合を確定する';
+  document.getElementById('auditPrefill').hidden = editing;
+}
+
+function submitAuditEdit() {
+  const snap = getAuditEditSnapshot();
+  if (!snap) { renderAuditEditUI(); updateAuditView(); return; }
+  const oldTx = snap.tx;
+  const newActual = readCounts('audit');
+  const newDamaged = readDamagedInput();
+
+  // ガードは reversal＋新実査を両方適用した「最終状態」で行う（中間状態は画面に出ない）
+  const shortage = DENOMS.filter(d => state.counts[d] + newActual[d] - snap.actual[d] < 0);
+  if (shortage.length) {
+    toast(`修正すると帳簿の枚数がマイナスになります：${shortage.map(d => fmt(d) + '円').join('、')}`);
+    return;
+  }
+  if (state.damaged + newDamaged - snap.damaged < 0) {
+    toast('修正すると損傷金がマイナスになります');
+    return;
+  }
+  if (DENOMS.every(d => newActual[d] === snap.actual[d]) && newDamaged === snap.damaged) {
+    toast('修正前と同じ内容です（変更はありません）');
+    return;
+  }
+
+  // 新しい実査の delta = 修正後の実枚数 − 実査時点の帳簿（正しく数えていたら記録されたはずの過不足）
+  const newDelta = {};
+  DENOMS.forEach(d => { const v = newActual[d] - snap.baseCounts[d]; if (v) newDelta[d] = v; });
+  const newDamagedDelta = newDamaged - snap.baseDamaged;
+  const oldDiff = sumDelta(oldTx.delta) + (oldTx.damagedDelta || 0);
+  const newDiff = sumDelta(newDelta) + newDamagedDelta;
+  if (!confirm(`前回の実査（#${oldTx.id}）を修正します。\n過不足：${fmtSigned(oldDiff)}円 → ${fmtSigned(newDiff)}円\n（元の実査は「取消」として履歴に残ります）`)) return;
+
+  const memo = document.getElementById('auditMemo').value.trim();
+  // 先にモードを解除する（1本目の addTransaction 内の renderAll が「対象が取消された」と誤検知しないように）
+  auditEdit = null;
+
+  const revDelta = {};
+  DENOMS.forEach(d => { if (oldTx.delta[d]) revDelta[d] = -oldTx.delta[d]; });
+  const rev = addTransaction({
+    type: 'reversal', delta: revDelta,
+    damagedDelta: -(oldTx.damagedDelta || 0), taxDelta: -(oldTx.taxDelta || 0),
+    memo: `記録 #${oldTx.id} の取消（実査の修正）`, reverses: oldTx.uid,
+  });
+  oldTx.reversedBy = rev.uid;
+  addTransaction({
+    type: 'audit', delta: newDelta, damagedDelta: newDamagedDelta,
+    memo: memo || '実査の修正', fixes: oldTx.uid,
+  });
+
+  clearAuditInputs();
+  renderAuditEditUI();
+  updateAuditView();
+  toast(`前回の実査を修正しました（過不足 ${fmtSigned(oldDiff)}円 → ${fmtSigned(newDiff)}円）`);
+}
+
 // ===== 取引の追加・取消 =====
-function addTransaction({ type, delta, memo, reverses, damagedDelta, taxDelta }) {
+function addTransaction({ type, delta, memo, reverses, fixes, damagedDelta, taxDelta }) {
   DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
   state.damaged += (damagedDelta || 0);
   state.tax += (taxDelta || 0);
+  // at は端末内で単調増加させる（同一ミリ秒だと mergeStates のソートで順序が入れ替わるため）
+  let at = new Date().toISOString();
+  const prev = state.transactions[state.transactions.length - 1];
+  if (prev && at <= prev.at) at = new Date(new Date(prev.at).getTime() + 1).toISOString();
   const tx = {
     id: state.nextId++,
     uid: newUid(),
-    at: new Date().toISOString(),
+    at,
     type,
     delta,
     amount: sumDelta(delta) + (damagedDelta || 0) + (taxDelta || 0),
     memo: memo || '',
   };
   if (reverses) tx.reverses = reverses;
+  if (fixes) tx.fixes = fixes;
   if (damagedDelta) tx.damagedDelta = damagedDelta;
   if (taxDelta) tx.taxDelta = taxDelta;
   state.transactions.push(tx);
@@ -1058,12 +1238,18 @@ function mergeStates(local, remote) {
   let merged = Object.values(byUid).sort((a, b) =>
     a.at < b.at ? -1 : a.at > b.at ? 1 : a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0);
 
-  // 2端末がオフライン中に同じ取引を取り消した場合の二重打ち消しを防ぐ（先の取消のみ残す）
+  // 2端末がオフライン中に同じ取引を取り消した場合の二重打ち消しを防ぐ（先の取消のみ残す）。
+  // 同じ実査を同時に修正した場合の補正（fixes 付き audit）の二重適用も同様に先勝ちで防ぐ
   const seenReversed = new Set();
+  const seenFixes = new Set();
   merged = merged.filter(tx => {
     if (tx.type === 'reversal' && tx.reverses) {
       if (seenReversed.has(tx.reverses)) return false;
       seenReversed.add(tx.reverses);
+    }
+    if (tx.type === 'audit' && tx.fixes) {
+      if (seenFixes.has(tx.fixes)) return false;
+      seenFixes.add(tx.fixes);
     }
     return true;
   });
@@ -1224,6 +1410,7 @@ function renderAll() {
   renderBalance();
   renderHistory();
   updateEntryTotal(); // 入出金タブの消費税残高表示（entryTaxBook）を同期などの更新にも追従させる
+  renderAuditEditUI(); // 実査修正のボタン・バナーと、同期で対象が変わった場合の自動解除
 }
 
 const TAB_ORDER = Array.from(document.querySelectorAll('nav.tabs button')).map(b => b.dataset.tab);
@@ -1372,6 +1559,8 @@ document.getElementById('entrySubmit').addEventListener('click', submitEntry);
 document.getElementById('baseEdit').addEventListener('click', editBaseAmount);
 document.getElementById('auditPrefill').addEventListener('click', prefillAudit);
 document.getElementById('auditSubmit').addEventListener('click', submitAudit);
+document.getElementById('auditEditStart').addEventListener('click', startAuditEdit);
+document.getElementById('auditEditCancel').addEventListener('click', cancelAuditEdit);
 document.getElementById('historyFilter').addEventListener('change', renderHistory);
 document.getElementById('csvExport').addEventListener('click', exportCsv);
 document.getElementById('jsonExport').addEventListener('click', exportJson);

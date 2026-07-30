@@ -310,9 +310,51 @@ def test_sync_scenarios(browser, base_url):
           header_total(pageb))
     check('F: 端末Aにも伝播', wait_synced_total(pagea, '2,000'), header_total(pagea))
 
-    for name, errs in [('端末1', err1), ('端末2', err2), ('端末A', erra), ('端末B', errb)]:
+    print('▼ G: 両端末オフラインで同じ実査を修正 → 補正は片方だけ適用される')
+    dbg = MockRTDB()
+    ctxg1, pageg1, errg1 = open_app(browser, url, dbg)
+    connect(pageg1)
+    pageg1.click('nav.tabs button[data-tab="audit"]')
+    pageg1.fill('#audit-1000', '5')
+    pageg1.click('#auditSubmit')  # 実査 5,000円
+    check('G: 実査が PUT される', wait_until(pageg1,
+        lambda: dbg.node and len(dbg.node['data'].get('transactions', [])) == 1))
+    ctxg2, pageg2, errg2 = open_app(browser, url, dbg)
+    connect(pageg2)
+    check('G: 端末2が実査を受信', wait_until(pageg2, lambda: header_total(pageg2) == '5,000'))
+
+    dbg.offline = True
+    for pg, val in [(pageg1, '6'), (pageg2, '7')]:  # 同じ実査を別の値で修正
+        pg.click('nav.tabs button[data-tab="audit"]')
+        pg.click('#auditEditStart')
+        pg.fill('#audit-1000', val)
+        pg.click('#auditSubmit')
+    check('G: 端末1はローカルで 6,000円', header_total(pageg1) == '6,000')
+    check('G: 端末2はローカルで 7,000円', header_total(pageg2) == '7,000')
+
+    dbg.offline = False
+    def g_converged():
+        trigger_sync(pageg1)
+        trigger_sync(pageg2)
+        return (header_total(pageg1) == header_total(pageg2)
+                and len(get_state(pageg1)['transactions']) == 3)
+    check('G: 復帰後に両端末が収束（取引3件）', wait_until(pageg1, g_converged, interval=0.5),
+          f'p1={header_total(pageg1)} p2={header_total(pageg2)}')
+    total = header_total(pageg1)
+    check('G: 補正は片方だけ適用（二重適用で 8,000円 にならない）',
+          total in ('6,000', '7,000'), total)
+    sg = get_state(pageg1)
+    check('G: fixes 付き実査が1件・取消が1件',
+          sum(1 for t in sg['transactions'] if t.get('fixes')) == 1
+          and sum(1 for t in sg['transactions'] if t['type'] == 'reversal') == 1)
+    check('G: counts 不変条件',
+          all(sg['counts'][d] == sum(t['delta'].get(d, 0) for t in sg['transactions'])
+              for d in sg['counts']))
+
+    for name, errs in [('端末1', err1), ('端末2', err2), ('端末A', erra), ('端末B', errb),
+                       ('端末G1', errg1), ('端末G2', errg2)]:
         check(f'ページエラーなし（{name}）', not errs, str(errs[:2]))
-    ctx1.close(); ctx2.close(); ctxa.close(); ctxb.close()
+    ctx1.close(); ctx2.close(); ctxa.close(); ctxb.close(); ctxg1.close(); ctxg2.close()
 
 
 def wait_synced_total(page, total, timeout=8.0):

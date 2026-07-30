@@ -26,6 +26,9 @@ GitHub Pages（https://takemiyu2008-ops.github.io/Cash-Handling/ ）で公開し
 - 取引の削除はしない方針。誤記録は「取消」＝逆方向の取引（`reversal`）を追加して打ち消す（監査証跡を残すため）
 - 実査は実枚数を入力→帳簿との差異（過不足）を取引 `audit` として記録し、帳簿を実査値に合わせる
 - 実査の硬貨は棒金（`ROLL_SIZE`=50枚/本）＋バラ枚数の2入力。`readCounts` が `{prefix}-roll-{金種}` の存在を見て自動合算する
+- **直近の実査は修正できる**（実査タブの「前回の実査を修正する」→ 修正モード）。修正は「元 `audit` の取消（`reversal`）＋新しい `audit`」の2取引で行う（直接書き換えはしない＝上記の削除禁止方針どおり）。実査時に数えた実枚数は保存していないが、不変条件から導出する（`actual = counts − Σ(実査より後の取引の delta)`、損傷金も同型。`buildAuditSnapshot`）。新 audit の delta は「修正後の実枚数 − 実査時点の帳簿」＝正しく数えていたら記録されたはずの過不足。ガードは reversal 単体ではなく**2取引適用後の最終状態**で行う（counts / damaged がマイナスにならないこと）
+  - 新 audit には `fixes: 元auditのuid` を付け、`mergeStates` がオフライン2端末の同時修正による補正の二重適用を先勝ちで排除する（取消の `reverses` dedup と同型）
+  - 修正モードの状態はメモリ上の `auditEdit`（対象 uid のみ）。同期で対象が取消された・より新しい実査が入った場合は `renderAuditEditUI` が自動解除する
 - 「損傷金」（破損札・変形硬貨）は金種別枚数とは**別枠**で管理する。実査時に合計額を入力する運用で、金種別枚数には**含めない**
   - `state.damaged` が損傷金の帳簿残高（円）、`tx.damagedDelta` がその取引による符号付き増減。**`state.damaged` = 全 `damagedDelta` の総和**という不変条件を `counts` と同じ形で持たせ、`mergeStates` が同じやり方で再計算できるようにしてある
   - 実査は「入力値 − `state.damaged`」を `damagedDelta` として記録する。取消（`reversal`）は `-tx.damagedDelta` を持つ
@@ -43,6 +46,7 @@ GitHub Pages（https://takemiyu2008-ops.github.io/Cash-Handling/ ）で公開し
 - RTDB ノードは `{ meta: {rev, at}, data: state }` の2層。60秒ポーリングは軽量な `meta` のみ GET し、`rev` が変わった時だけ全体同期（無料枠の転送量対策）
 - 同期は「GET（ETag付き）→ `mergeStates` で統合 → 差分があれば `if-match` 条件付き PUT、412 なら再試行（最大3回）」
 - **counts = 全 transactions の delta の総和**（および **damaged = 全 damagedDelta の総和**）という不変条件を利用し、マージは「取引 `uid` の和集合 → at順ソート → `id` 振り直し → counts / damaged 再計算」。取消の相互参照は連番 `id` ではなく `uid` で行う（`reverses`/`reversedBy`）
+- 取引の `at` は**端末内で単調増加を保証**する（`addTransaction` が直前の取引と同時刻以下なら +1ms する）。実査修正のように2取引を連続追加すると同一ミリ秒になり、マージの at 順ソートで順序が入れ替わって実枚数の導出が狂うため
 - `state.gen`（世代番号）が異なる場合は新しい方が全取り。全置換操作（`resetAll`・`importJson`）は新しい `gen` を採番して全端末に伝播させる
 - RTDB は空オブジェクト・空配列を保存しない仕様のため、`normalizeState()` で `tx.delta` / `transactions` / `damaged`（0のとき落ちる）等の欠落を必ず補完してから使う（照合一致の取引は `delta: {}`）
 - 各操作は「先に localStorage 保存 → 後から同期」。オフラインでも従来どおり動き、復帰時（online イベント / visibilitychange / ポーリング / 次回保存）に追いつく
