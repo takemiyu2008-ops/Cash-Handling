@@ -204,6 +204,16 @@ input[type="password"]{
         <option value="tax_out">消費税</option>
         <option value="misc_out">その他</option>
       </optgroup>
+      <optgroup label="レジ入金（記録のみ）">
+        <option value="reg_purchase_in">現金仕入</option>
+        <option value="reg_ar_in">売掛金</option>
+        <option value="reg_collect_in">売掛金回収</option>
+      </optgroup>
+      <optgroup label="レジ出金（記録のみ）">
+        <option value="reg_purchase_out">現金仕入</option>
+        <option value="reg_ar_out">売掛金</option>
+        <option value="reg_collect_out">売掛金回収</option>
+      </optgroup>
     </select>
 
     <div id="entryDenomsWrap">
@@ -211,14 +221,19 @@ input[type="password"]{
       <div id="entryDenoms"></div>
     </div>
 
+    <!-- 金額のみ入力（消費税・レジ内入出金で共用） -->
     <div id="entryTaxWrap" hidden>
       <label class="field" for="entryTaxAmount">金額（円）</label>
       <input type="number" id="entryTaxAmount" min="0" step="1" inputmode="numeric" placeholder="0"
              style="width:140px; height:38px; text-align:right; font-size:16px;">
-      <p class="hint">
+      <p class="hint" id="entryTaxHint">
         消費税は国に納める預り金のため、金種別の帳簿残高（残高タブ）や金庫総額には<strong>含めず</strong>、
         別枠の消費税残高だけが増減します。
         現在の帳簿上の消費税は <strong id="entryTaxBook">0円</strong> です。
+      </p>
+      <p class="hint" id="entryRegHint" hidden>
+        レジ内の現金の出し入れの記録です。金庫の金種別残高・損傷金・消費税・金庫総額には
+        <strong>影響しません</strong>（履歴とCSVに記録として残るだけです）。
       </p>
     </div>
 
@@ -375,6 +390,13 @@ const TYPE_LABELS = {
   owner_out:     'オーナー持ち出し分（出金）',
   tax_out:       '消費税（出金）',
   misc_out:      'その他（出金）',
+  // レジ内の入出金。金庫の残高・総額には影響しない記録専用の種別
+  reg_purchase_in:  'レジ：現金仕入（入金）',
+  reg_ar_in:        'レジ：売掛金（入金）',
+  reg_collect_in:   'レジ：売掛金回収（入金）',
+  reg_purchase_out: 'レジ：現金仕入（出金）',
+  reg_ar_out:       'レジ：売掛金（出金）',
+  reg_collect_out:  'レジ：売掛金回収（出金）',
   audit:         '実査調整',
   reversal:      '取消',
   // 旧種別。新規には選べないが、過去の取引を履歴・CSVに正しく表示するため残す
@@ -387,10 +409,16 @@ const TYPE_LABELS = {
 };
 const IN_TYPES = new Set([
   'ar_in', 'nichii_in', 'gas_in', 'owner_in', 'tax_in', 'misc_in',
+  'reg_purchase_in', 'reg_ar_in', 'reg_collect_in', // レジ内の入出金
   'sales_in', 'change_supply', 'other_in', // 旧種別
 ]);
 // 金種別枚数ではなく金額のみで記録し、別枠の消費税残高（state.tax）だけを増減させる種別
 const TAX_TYPES = new Set(['tax_in', 'tax_out']);
+// レジ内の入出金。金額のみで記録し、state（金種別枚数・損傷金・消費税）を一切動かさない記録専用の種別
+const REG_TYPES = new Set([
+  'reg_purchase_in', 'reg_ar_in', 'reg_collect_in',
+  'reg_purchase_out', 'reg_ar_out', 'reg_collect_out',
+]);
 
 // 履歴タブの絞り込み項目。types: null は全件。
 // 「その他」に旧 other_in/other_out は含めない（旧種別は legacy として別扱い）
@@ -402,6 +430,9 @@ const HISTORY_FILTERS = [
   { key: 'owner',    label: 'オーナー持ち出し分', types: ['owner_in', 'owner_out'] },
   { key: 'tax',      label: '消費税',             types: ['tax_in', 'tax_out'] },
   { key: 'misc',     label: 'その他',             types: ['misc_in', 'misc_out'] },
+  { key: 'reg_purchase', label: 'レジ：現金仕入',   types: ['reg_purchase_in', 'reg_purchase_out'] },
+  { key: 'reg_ar',       label: 'レジ：売掛金',     types: ['reg_ar_in', 'reg_ar_out'] },
+  { key: 'reg_collect',  label: 'レジ：売掛金回収', types: ['reg_collect_in', 'reg_collect_out'] },
   { key: 'audit',    label: '実査調整',           types: ['audit'] },
   { key: 'reversal', label: '取消',               types: ['reversal'] },
   { key: 'legacy',   label: '旧種別',
@@ -415,6 +446,7 @@ const HISTORY_FILTERS = [
 // transactions[].damagedDelta: 損傷金の符号付き増減（円）。state.damaged = 全 damagedDelta の総和
 // state.tax:     預り消費税の帳簿残高（円）。国に納める預り金のため金庫総額には含めない別枠
 // transactions[].taxDelta: 消費税の符号付き増減（円）。state.tax = 全 taxDelta の総和
+// transactions[].regAmount: レジ内入出金の符号付き金額（円）。記録専用で state のどの残高にも寄与しない
 let state = load();
 
 function emptyState() {
@@ -626,7 +658,7 @@ function editBaseAmount() {
 }
 
 // ===== 入出金タブ =====
-// 消費税の金額入力欄を 0 以上の整数として読む（空欄・不正値は 0）
+// 金額のみ入力欄（消費税・レジ内入出金で共用）を 0 以上の整数として読む（空欄・不正値は 0）
 function readTaxAmountInput() {
   const v = parseInt(document.getElementById('entryTaxAmount').value, 10);
   return Number.isInteger(v) && v > 0 ? v : 0;
@@ -635,13 +667,17 @@ function readTaxAmountInput() {
 function updateEntryTotal() {
   const type = document.getElementById('entryType').value;
   const isTax = TAX_TYPES.has(type);
-  // 消費税は金種別枚数を動かさないため、枚数入力の代わりに金額のみの入力欄に切り替える
-  document.getElementById('entryDenomsWrap').hidden = isTax;
-  document.getElementById('entryTaxWrap').hidden = !isTax;
+  const isReg = REG_TYPES.has(type);
+  const amountOnly = isTax || isReg;
+  // 消費税・レジ内入出金は金種別枚数を動かさないため、枚数入力の代わりに金額のみの入力欄に切り替える
+  document.getElementById('entryDenomsWrap').hidden = amountOnly;
+  document.getElementById('entryTaxWrap').hidden = !amountOnly;
+  document.getElementById('entryTaxHint').hidden = !isTax;
+  document.getElementById('entryRegHint').hidden = !isReg;
   let total = 0;
-  if (isTax) {
+  if (amountOnly) {
     total = readTaxAmountInput();
-    document.getElementById('entryTaxBook').textContent = fmt(state.tax) + '円';
+    if (isTax) document.getElementById('entryTaxBook').textContent = fmt(state.tax) + '円';
   } else {
     const counts = readCounts('entry');
     DENOMS.forEach(d => {
@@ -670,6 +706,18 @@ function submitEntry() {
       return;
     }
     addTransaction({ type, delta: {}, taxDelta: isIn ? v : -v, memo });
+    document.getElementById('entryTaxAmount').value = '';
+    document.getElementById('entryMemo').value = '';
+    updateEntryTotal();
+    toast(`${TYPE_LABELS[type]} ${fmt(v)}円 を記録しました`);
+    return;
+  }
+
+  // レジ内の入出金：金額のみの記録専用。金庫の帳簿（counts / damaged / tax）は一切動かさない
+  if (REG_TYPES.has(type)) {
+    const v = readTaxAmountInput();
+    if (v === 0) { toast('金額を入力してください'); return; }
+    addTransaction({ type, delta: {}, regAmount: isIn ? v : -v, memo });
     document.getElementById('entryTaxAmount').value = '';
     document.getElementById('entryMemo').value = '';
     updateEntryTotal();
@@ -935,6 +983,7 @@ function submitAuditEdit() {
   const rev = addTransaction({
     type: 'reversal', delta: revDelta,
     damagedDelta: -(oldTx.damagedDelta || 0), taxDelta: -(oldTx.taxDelta || 0),
+    regAmount: -(oldTx.regAmount || 0),
     memo: `記録 #${oldTx.id} の取消（実査の修正）`, reverses: oldTx.uid,
   });
   oldTx.reversedBy = rev.uid;
@@ -950,7 +999,7 @@ function submitAuditEdit() {
 }
 
 // ===== 取引の追加・取消 =====
-function addTransaction({ type, delta, memo, reverses, fixes, damagedDelta, taxDelta }) {
+function addTransaction({ type, delta, memo, reverses, fixes, damagedDelta, taxDelta, regAmount }) {
   DENOMS.forEach(d => { state.counts[d] += (delta[d] || 0); });
   state.damaged += (damagedDelta || 0);
   state.tax += (taxDelta || 0);
@@ -964,13 +1013,14 @@ function addTransaction({ type, delta, memo, reverses, fixes, damagedDelta, taxD
     at,
     type,
     delta,
-    amount: sumDelta(delta) + (damagedDelta || 0) + (taxDelta || 0),
+    amount: sumDelta(delta) + (damagedDelta || 0) + (taxDelta || 0) + (regAmount || 0),
     memo: memo || '',
   };
   if (reverses) tx.reverses = reverses;
   if (fixes) tx.fixes = fixes;
   if (damagedDelta) tx.damagedDelta = damagedDelta;
   if (taxDelta) tx.taxDelta = taxDelta;
+  if (regAmount) tx.regAmount = regAmount;
   state.transactions.push(tx);
   save();
   renderAll();
@@ -999,9 +1049,11 @@ function reverseTransaction(uid) {
     toast('取り消すと消費税がマイナスになるため取消できません');
     return;
   }
+  // レジ内入出金は残高を持たないため、マイナス化ガードは不要（符号反転で打ち消すだけ）
+  const regAmount = -(tx.regAmount || 0);
 
   const rev = addTransaction({
-    type: 'reversal', delta, damagedDelta, taxDelta,
+    type: 'reversal', delta, damagedDelta, taxDelta, regAmount,
     memo: `記録 #${tx.id} の取消`, reverses: tx.uid,
   });
   tx.reversedBy = rev.uid;
@@ -1070,6 +1122,7 @@ function renderHistory() {
       .map(d => `${fmt(d)}円 × ${fmtSigned(tx.delta[d])}枚`).join('　') || '（枚数変動なし）';
     if (tx.damagedDelta) detail += `<br>損傷金（別枠） ${fmtSigned(tx.damagedDelta)}円`;
     if (tx.taxDelta) detail += `<br>消費税（別枠） ${fmtSigned(tx.taxDelta)}円`;
+    if (tx.regAmount) detail += `<br>レジ内の入出金（記録のみ・金庫総額に影響なし） ${fmtSigned(tx.regAmount)}円`;
     if (tx.damaged) detail += `<br>うち損傷金 ${fmt(tx.damaged)}円`; // 旧形式（枚数に含めていた頃の参考値）
 
     item.innerHTML =
@@ -1121,12 +1174,13 @@ function today() {
 }
 
 function exportCsv() {
-  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金増減', '消費税増減', ...DENOMS.map(d => fmt(d) + '円')];
+  const header = ['ID', '日時', '種別', '金額', 'メモ', '損傷金増減', '消費税増減', 'レジ増減', ...DENOMS.map(d => fmt(d) + '円')];
   const rows = state.transactions.map(tx => [
     tx.id, fmtDate(tx.at), TYPE_LABELS[tx.type], tx.amount,
     '"' + (tx.memo || '').replace(/"/g, '""') + '"',
     tx.damagedDelta || tx.damaged || 0,
     tx.taxDelta || 0,
+    tx.regAmount || 0,
     ...DENOMS.map(d => tx.delta[d] || 0),
   ].join(','));
   download(`金庫取引履歴_${today()}.csv`, '﻿' + [header.join(','), ...rows].join('\r\n'), 'text/csv');
